@@ -5,6 +5,7 @@ const int ANALOG_INPUT_PIN = A0;  // Pin de entrada analógica
 const int PWM_OUTPUT_PIN = 9;     // Pin de salida PWM (Timer1 - OC1A)
 
 // Variables para el muestreo
+volatile uint16_t rawSample = 0;
 volatile uint16_t analogValue = 0;
 volatile uint16_t filteredValue = 0;
 volatile bool newSampleReady = false;
@@ -34,7 +35,7 @@ int32_t x2_q15 = 0;
 int32_t y1_q15 = 0;
 int32_t y2_q15 = 0;
 
-// Configuración del ADC para lectura rápida
+// Configuración del ADC para lectura rápida con interrupción
 void setupADC() {
   // Configurar el ADC para lectura más rápida
   // Prescaler de 16 para frecuencia de ADC de 1 MHz (16MHz/16)
@@ -43,6 +44,9 @@ void setupADC() {
 
   ADMUX = 0;               // AREF, canal A0
   ADMUX |= (1 << REFS0);   // Referencia AVCC
+
+  // Habilitar interrupción de ADC
+  ADCSRA |= (1 << ADIE);   // ADC Interrupt Enable
 }
 
 // Configuración del Timer2 para interrupciones a exactamente 2 KHz
@@ -86,61 +90,16 @@ void setupPWM() {
 }
 
 // Interrupción del Timer2 - Se ejecuta cada 500 µs (exactamente 2 KHz)
-// OPTIMIZADO PARA TIEMPO REAL - Sin operaciones de punto flotante
+// SOLO INICIAR CONVERSIÓN ADC - Sin bloqueos
 ISR(TIMER2_COMPA_vect) {
-  // Iniciar conversión ADC
-  ADCSRA |= (1 << ADSC);
+  ADCSRA |= (1 << ADSC);  // Solo iniciar ADC (~104 µs hasta completar)
+}
 
-  // Esperar a que termine la conversión (~104 µs con prescaler 16)
-  while (ADCSRA & (1 << ADSC));
-
-  // Leer ADC (0-1023)
-  uint16_t adcValue = ADC;
-
-  // Convertir a valor centrado en 0 y escalar a Q15
-  // Entrada: 0-1023 → -512 a +511
-  int32_t x = ((int32_t)adcValue - 512L) << Q15_SHIFT;
-
-  // Filtro IIR Direct Form I en punto fijo Q15
-  // y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
-
-  // Calcular términos del numerador (feedforward)
-  int32_t num = ((int32_t)b0_q15 * (x >> Q15_SHIFT)) +
-                ((int32_t)b1_q15 * (x1_q15 >> Q15_SHIFT)) +
-                ((int32_t)b2_q15 * (x2_q15 >> Q15_SHIFT));
-
-  // Calcular términos del denominador (feedback) - con escalado adicional
-  int32_t den = ((int32_t)a1_q15 * (y1_q15 >> (Q15_SHIFT - 1))) +
-                ((int32_t)a2_q15 * (y2_q15 >> (Q15_SHIFT - 1)));
-
-  // Salida del filtro
-  int32_t y = num - den;
-
-  // Actualizar estados del filtro
-  x2_q15 = x1_q15;
-  x1_q15 = x;
-  y2_q15 = y1_q15;
-  y1_q15 = y;
-
-  // Amplificar para mejorar la visibilidad (ganancia × 3.5)
-  // Multiplicar por 3.5 = multiplicar por 7 y dividir por 2
-  int32_t y_amplified = (y * 7) >> 1;
-
-  // Convertir de Q15 a rango 0-1023
-  // Descalar de Q15 y re-centrar en 512
-  int32_t output = (y_amplified >> Q15_SHIFT) + 512L;
-
-  // Saturar a rango válido para PWM (0-1023)
-  if (output < 0) output = 0;
-  if (output > 1023) output = 1023;
-
-  // Actualizar PWM (OCR1A espera 0-255, output está en 0-1023)
-  OCR1A = output >> 2;
-
-  // Guardar valores para transmisión serial
-  analogValue = adcValue;
-  filteredValue = (uint16_t)output;
-  newSampleReady = true;
+// Interrupción del ADC - Se ejecuta cuando termina la conversión (~104 µs después)
+// SOLO CAPTURAR MUESTRA - Sin procesamiento
+ISR(ADC_vect) {
+  rawSample = ADC;        // Solo capturar valor (0-1023)
+  newSampleReady = true;  // Señalizar que hay muestra disponible
 }
 
 void setup() {
@@ -162,9 +121,66 @@ void setup() {
 }
 
 void loop() {
+  // PROCESAMIENTO DISTRIBUIDO - Solo cuando hay muestra lista
   if (newSampleReady) {
     newSampleReady = false;
 
+    // Leer muestra capturada por ISR(ADC_vect)
+    uint16_t adcValue = rawSample;
+
+    // ========================================================================
+    // AQUÍ PROCESAR FILTRO IIR - En contexto del loop, sin bloquear ISRs
+    // ========================================================================
+
+    // Convertir a valor centrado en 0 y escalar a Q15
+    // Entrada: 0-1023 → -512 a +511
+    int32_t x = ((int32_t)adcValue - 512L) << Q15_SHIFT;
+
+    // Filtro IIR Direct Form I en punto fijo Q15
+    // y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+
+    // Calcular términos del numerador (feedforward)
+    int32_t num = ((int32_t)b0_q15 * (x >> Q15_SHIFT)) +
+                  ((int32_t)b1_q15 * (x1_q15 >> Q15_SHIFT)) +
+                  ((int32_t)b2_q15 * (x2_q15 >> Q15_SHIFT));
+
+    // Calcular términos del denominador (feedback) - con escalado adicional
+    int32_t den = ((int32_t)a1_q15 * (y1_q15 >> (Q15_SHIFT - 1))) +
+                  ((int32_t)a2_q15 * (y2_q15 >> (Q15_SHIFT - 1)));
+
+    // Salida del filtro
+    int32_t y = num - den;
+
+    // Actualizar estados del filtro
+    x2_q15 = x1_q15;
+    x1_q15 = x;
+    y2_q15 = y1_q15;
+    y1_q15 = y;
+
+    // Amplificar para mejorar la visibilidad (ganancia × 3.5)
+    // Multiplicar por 3.5 = multiplicar por 7 y dividir por 2
+    int32_t y_amplified = (y * 7) >> 1;
+
+    // Convertir de Q15 a rango 0-1023
+    // Descalar de Q15 y re-centrar en 512
+    int32_t output = (y_amplified >> Q15_SHIFT) + 512L;
+
+    // Saturar a rango válido para PWM (0-1023)
+    if (output < 0) output = 0;
+    if (output > 1023) output = 1023;
+
+    // ========================================================================
+    // AQUÍ ACTUALIZAR PWM - También en contexto del loop
+    // ========================================================================
+    OCR1A = output >> 2;  // Convertir 0-1023 a 0-255 para PWM
+
+    // Guardar valores para transmisión serial
+    analogValue = adcValue;
+    filteredValue = (uint16_t)output;
+
+    // ========================================================================
+    // TRANSMISIÓN SERIAL - Sin bloquear el procesamiento crítico
+    // ========================================================================
     static unsigned long lastPrint = 0;
     static uint16_t sampleCounter = 0;
 
