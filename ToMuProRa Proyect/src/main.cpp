@@ -8,18 +8,31 @@ const int PWM_OUTPUT_PIN = 9;     // Pin de salida PWM (Timer1 - OC1A)
 volatile uint16_t analogValue = 0;
 volatile uint16_t filteredValue = 0;
 volatile bool newSampleReady = false;
-// Coeficientes del filtro IIR en punto flotante (para prueba)
-const float b0_f = 0.027477;
-const float b1_f = 0.000000;
-const float b2_f = -0.027477;
-const float a1_f = -1.940814;
-const float a2_f = 0.945045;
 
-// Estados del filtro en punto flotante
-float x1_f = 0.0;
-float x2_f = 0.0;
-float y1_f = 0.0;
-float y2_f = 0.0;
+// ============================================================================
+// FILTRO IIR EN PUNTO FIJO - Optimizado para ejecución en tiempo real
+// ============================================================================
+// Coeficientes originales en punto flotante:
+// b0 = 0.027477, b1 = 0.0, b2 = -0.027477
+// a1 = -1.940814, a2 = 0.945045
+
+// Conversión a punto fijo Q15 (rango: -1.0 a +0.99997)
+// Factor de escala: 2^15 = 32768
+#define Q15_SHIFT 15
+#define Q15_SCALE 32768L
+
+// Coeficientes en punto fijo Q15
+const int16_t b0_q15 = 900;      // 0.027477 * 32768 ≈ 900
+const int16_t b1_q15 = 0;        // 0.0
+const int16_t b2_q15 = -900;     // -0.027477 * 32768 ≈ -900
+const int16_t a1_q15 = -31677;   // -1.940814 * 32768 / 2 ≈ -31677 (escalado para evitar overflow)
+const int16_t a2_q15 = 15467;    // 0.945045 * 32768 / 2 ≈ 15467 (escalado para evitar overflow)
+
+// Estados del filtro en punto fijo Q15 (usando int32_t para acumulación)
+int32_t x1_q15 = 0;
+int32_t x2_q15 = 0;
+int32_t y1_q15 = 0;
+int32_t y2_q15 = 0;
 
 // Configuración del ADC para lectura rápida
 void setupADC() {
@@ -73,38 +86,60 @@ void setupPWM() {
 }
 
 // Interrupción del Timer2 - Se ejecuta cada 500 µs (exactamente 2 KHz)
+// OPTIMIZADO PARA TIEMPO REAL - Sin operaciones de punto flotante
 ISR(TIMER2_COMPA_vect) {
+  // Iniciar conversión ADC
   ADCSRA |= (1 << ADSC);
+
+  // Esperar a que termine la conversión (~104 µs con prescaler 16)
   while (ADCSRA & (1 << ADSC));
-  
+
   // Leer ADC (0-1023)
-  int16_t adcValue = ADC;
+  uint16_t adcValue = ADC;
 
-  // Convertir a valor centrado en 0 (rango ±512)
-  float x = (float)(adcValue - 512);
+  // Convertir a valor centrado en 0 y escalar a Q15
+  // Entrada: 0-1023 → -512 a +511
+  int32_t x = ((int32_t)adcValue - 512L) << Q15_SHIFT;
 
-  // Filtro IIR Direct Form I en punto flotante
+  // Filtro IIR Direct Form I en punto fijo Q15
   // y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
-  float y = b0_f * x + b1_f * x1_f + b2_f * x2_f - a1_f * y1_f - a2_f * y2_f;
 
-  // Actualizar estados
-  x2_f = x1_f;
-  x1_f = x;
-  y2_f = y1_f;
-  y1_f = y;
+  // Calcular términos del numerador (feedforward)
+  int32_t num = ((int32_t)b0_q15 * (x >> Q15_SHIFT)) +
+                ((int32_t)b1_q15 * (x1_q15 >> Q15_SHIFT)) +
+                ((int32_t)b2_q15 * (x2_q15 >> Q15_SHIFT));
 
-  // Amplificar para mejorar la visibilidad sin saturar
-  // Ganancia del filtro es ~0.137, amplificar por 3-4 para evitar saturación
-  float y_amplified = y * 3.5;
+  // Calcular términos del denominador (feedback) - con escalado adicional
+  int32_t den = ((int32_t)a1_q15 * (y1_q15 >> (Q15_SHIFT - 1))) +
+                ((int32_t)a2_q15 * (y2_q15 >> (Q15_SHIFT - 1)));
 
-  // Re-centrar en 512 y saturar para PWM (0-1023)
-  int16_t output = (int16_t)(y_amplified + 512.0);
-  output = constrain(output, 0, 1023);
+  // Salida del filtro
+  int32_t y = num - den;
 
+  // Actualizar estados del filtro
+  x2_q15 = x1_q15;
+  x1_q15 = x;
+  y2_q15 = y1_q15;
+  y1_q15 = y;
+
+  // Amplificar para mejorar la visibilidad (ganancia × 3.5)
+  // Multiplicar por 3.5 = multiplicar por 7 y dividir por 2
+  int32_t y_amplified = (y * 7) >> 1;
+
+  // Convertir de Q15 a rango 0-1023
+  // Descalar de Q15 y re-centrar en 512
+  int32_t output = (y_amplified >> Q15_SHIFT) + 512L;
+
+  // Saturar a rango válido para PWM (0-1023)
+  if (output < 0) output = 0;
+  if (output > 1023) output = 1023;
+
+  // Actualizar PWM (OCR1A espera 0-255, output está en 0-1023)
   OCR1A = output >> 2;
 
-  analogValue = ADC;
-  filteredValue = output;
+  // Guardar valores para transmisión serial
+  analogValue = adcValue;
+  filteredValue = (uint16_t)output;
   newSampleReady = true;
 }
 

@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(pio run:*)",
+      "Bash(platformio run)"
     ],
     "deny": [],
     "ask": []
