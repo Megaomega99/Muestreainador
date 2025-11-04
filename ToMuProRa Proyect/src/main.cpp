@@ -6,7 +6,20 @@ const int PWM_OUTPUT_PIN = 9;     // Pin de salida PWM (Timer1 - OC1A)
 
 // Variables para el muestreo
 volatile uint16_t analogValue = 0;
+volatile uint16_t filteredValue = 0;
 volatile bool newSampleReady = false;
+// Coeficientes del filtro IIR en punto flotante (para prueba)
+const float b0_f = 0.027477;
+const float b1_f = 0.000000;
+const float b2_f = -0.027477;
+const float a1_f = -1.940814;
+const float a2_f = 0.945045;
+
+// Estados del filtro en punto flotante
+float x1_f = 0.0;
+float x2_f = 0.0;
+float y1_f = 0.0;
+float y2_f = 0.0;
 
 // Configuración del ADC para lectura rápida
 void setupADC() {
@@ -61,27 +74,43 @@ void setupPWM() {
 
 // Interrupción del Timer2 - Se ejecuta cada 500 µs (exactamente 2 KHz)
 ISR(TIMER2_COMPA_vect) {
-  // Iniciar conversión ADC
   ADCSRA |= (1 << ADSC);
-
-  // Esperar a que termine la conversión (toma ~13 µs con prescaler 16)
   while (ADCSRA & (1 << ADSC));
+  
+  // Leer ADC (0-1023)
+  int16_t adcValue = ADC;
 
-  // Leer valor del ADC (0-1023)
+  // Convertir a valor centrado en 0 (rango ±512)
+  float x = (float)(adcValue - 512);
+
+  // Filtro IIR Direct Form I en punto flotante
+  // y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+  float y = b0_f * x + b1_f * x1_f + b2_f * x2_f - a1_f * y1_f - a2_f * y2_f;
+
+  // Actualizar estados
+  x2_f = x1_f;
+  x1_f = x;
+  y2_f = y1_f;
+  y1_f = y;
+
+  // Amplificar para mejorar la visibilidad sin saturar
+  // Ganancia del filtro es ~0.137, amplificar por 3-4 para evitar saturación
+  float y_amplified = y * 3.5;
+
+  // Re-centrar en 512 y saturar para PWM (0-1023)
+  int16_t output = (int16_t)(y_amplified + 512.0);
+  output = constrain(output, 0, 1023);
+
+  OCR1A = output >> 2;
+
   analogValue = ADC;
+  filteredValue = output;
   newSampleReady = true;
-
-  // Convertir de 10 bits (0-1023) a 8 bits (0-255) para PWM
-  uint8_t pwmValue = analogValue >> 2;
-
-  // Actualizar salida PWM directamente en el registro
-  OCR1A = pwmValue;
 }
 
 void setup() {
-  // Inicializar comunicación serial para debug
+  // Inicializar comunicación serial
   Serial.begin(115200);
-  Serial.println("Sistema de adquisición a 2 KHz con PWM iniciado");
 
   // Configurar pines
   pinMode(ANALOG_INPUT_PIN, INPUT);
@@ -95,40 +124,26 @@ void setup() {
 
   // Configurar Timer2 para interrupciones exactamente a 2 KHz
   setupTimer2();
-
-  Serial.println("Configuración completa");
-  Serial.println("Pin entrada: A0");
-  Serial.println("Pin salida PWM: D9");
-  Serial.println("Frecuencia PWM: ~31 kHz");
-  Serial.println("Frecuencia de muestreo: 2.000 KHz (exacto)");
 }
 
 void loop() {
-  // Enviar datos en formato compatible con Serial Plotter
-  // El Serial Plotter grafica valores separados por espacios/tabs
   if (newSampleReady) {
     newSampleReady = false;
 
-    // Reducir frecuencia de impresión para no saturar el serial
-    // A 2 KHz sería 2000 muestras/seg, muy rápido para el plotter
     static unsigned long lastPrint = 0;
     static uint16_t sampleCounter = 0;
 
     sampleCounter++;
 
-    // Enviar cada 10 muestras (200 Hz) o cada 50ms
+    // Enviar cada 10 muestras (200 Hz)
     if (sampleCounter >= 10 || (millis() - lastPrint >= 50)) {
-      // Formato para Serial Plotter: etiqueta:valor
-      // Todas las señales escaladas al mismo rango para comparación visual
-
       // Calcular voltaje de entrada (0-5V)
       float inputVoltage = (analogValue * 5.0) / 1023.0;
 
-      // Calcular voltaje de salida PWM (0-5V equivalente)
-      uint8_t pwmValue = analogValue >> 2;  // 0-255
-      float outputVoltage = (pwmValue * 5.0) / 255.0;
+      // Calcular voltaje de salida filtrada (0-5V)
+      float outputVoltage = (filteredValue * 5.0) / 1023.0;
 
-      // Enviar ambas señales en voltios para comparación directa
+      // Formato para Serial Plotter
       Serial.print("Entrada_V:");
       Serial.print(inputVoltage, 3);
       Serial.print(" ");
