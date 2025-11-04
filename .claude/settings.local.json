@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cat:*)",
       "Bash(pio run:*)",
-      "Bash(platformio run)"
+      "Bash(platformio run)",
+      "Bash(python:*)",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []
