@@ -29,7 +29,7 @@ int32_t hilbert_buffer[HILBERT_TAPS] = {0};
 uint8_t hilbert_index = 0;
 
 const int32_t MAGNITUDE_THRESHOLD = 80L << Q15_SHIFT;
-const int16_t PHASE_THRESHOLD = 16380;
+const int16_t PHASE_THRESHOLD = 5000;
 
 #define PERIOD_21HZ_MS 48
 #define FILTER_DELAY_MS 10
@@ -55,6 +55,7 @@ void setupADC() {
   ADMUX = 0;
   ADMUX |= (1 << REFS0);
   ADCSRA |= (1 << ADIE);
+  ADCSRA |= (1 << ADEN);  // Habilitar el ADC
 }
 
 // Configura Timer2 para disparar ADC a 2000 Hz
