@@ -31,14 +31,12 @@ uint8_t hilbert_index = 0;
 const int32_t MAGNITUDE_THRESHOLD = 80L << Q15_SHIFT;
 const int16_t PHASE_THRESHOLD = 5000;
 
-//
-#define PERIOD_21HZ_MS 48           // Período de 21 Hz (1000/21 ≈ 47.6ms)
-#define FILTER_DELAY_MS 10          // Retardo de filtros IIR + Hilbert
-#define PHASE_ADJUST_MS 0  //  (rango: -48 a +48 ms)
+#define PERIOD_21HZ_MS 48
+#define FILTER_DELAY_MS 10
+#define PHASE_ADJUST_MS 0
 #define PREDICTION_DELAY_MS (PERIOD_21HZ_MS - FILTER_DELAY_MS + PHASE_ADJUST_MS)
-#define PREDICTION_DELAY_SAMPLES (PREDICTION_DELAY_MS * 2)      // Muestras a 2000Hz
+#define PREDICTION_DELAY_SAMPLES (PREDICTION_DELAY_MS * 2)
 
-// Estructura para predicción del siguiente pico
 struct PeakPredictor {
   uint8_t countdown;
   bool active;
@@ -50,6 +48,7 @@ volatile bool triggerPulse = false;
 unsigned long pulseStartTime = 0;
 const unsigned long PULSE_DURATION = 5;
 
+// Configura ADC a 2000 Hz con interrupciones
 void setupADC() {
   ADCSRA &= ~0x07;
   ADCSRA |= 0x04;
@@ -58,6 +57,7 @@ void setupADC() {
   ADCSRA |= (1 << ADIE);
 }
 
+// Configura Timer2 para disparar ADC a 2000 Hz
 void setupTimer2() {
   noInterrupts();
   TCCR2A = 0;
@@ -70,6 +70,7 @@ void setupTimer2() {
   interrupts();
 }
 
+// Configura PWM en pin 9 para salida de señal filtrada
 void setupPWM() {
   pinMode(PWM_OUTPUT_PIN, OUTPUT);
   TCCR1A = 0;
@@ -90,6 +91,7 @@ ISR(ADC_vect) {
   newSampleReady = true;
 }
 
+// Calcula magnitud aproximada de señal compleja
 int32_t fastMagnitude(int32_t real, int32_t imag) {
   int32_t abs_real = real >= 0 ? real : -real;
   int32_t abs_imag = imag >= 0 ? imag : -imag;
@@ -98,6 +100,7 @@ int32_t fastMagnitude(int32_t real, int32_t imag) {
   return max_val + ((min_val * 13107) >> Q15_SHIFT);
 }
 
+// Calcula fase aproximada de señal compleja
 int16_t fastPhase(int32_t real, int32_t imag) {
   if (real == 0 && imag == 0) return 0;
 
@@ -194,21 +197,17 @@ void loop() {
     int32_t envelope = fastMagnitude(real_part, imag_part);
     int16_t phase = fastPhase(real_part, imag_part);
 
-    // Detectar pico en señal filtrada (fase cercana a 0°)
     bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
                   (phase > -PHASE_THRESHOLD && phase < PHASE_THRESHOLD);
 
-    // VERSIÓN CON COMPENSACIÓN DE RETARDO: Predecir el siguiente pico
     static bool wasAboveThreshold = true;
 
-    // Si detectamos un nuevo pico, iniciar countdown para el SIGUIENTE pico
     if (isPeak && !wasAboveThreshold && !peakPredictor.active) {
       peakPredictor.countdown = PREDICTION_DELAY_SAMPLES;
       peakPredictor.active = true;
     }
     wasAboveThreshold = (envelope > MAGNITUDE_THRESHOLD);
 
-    // Decrementar countdown y disparar cuando llegue a 0
     if (peakPredictor.active) {
       if (peakPredictor.countdown > 0) {
         peakPredictor.countdown--;
