@@ -5,7 +5,8 @@
       "Bash(pio run:*)",
       "Bash(platformio run)",
       "Bash(python:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []

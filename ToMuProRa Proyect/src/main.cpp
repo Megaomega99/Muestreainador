@@ -31,6 +31,64 @@ uint8_t hilbert_index = 0;
 const int32_t MAGNITUDE_THRESHOLD = 70L << Q15_SHIFT;
 const int16_t PHASE_THRESHOLD = 5000;
 
+// ==============================================================================
+// COMPENSACIÓN DEL RETARDO DEL SISTEMA - PREDICCIÓN DEL SIGUIENTE PICO
+// ==============================================================================
+// El sistema introduce un retardo debido a los filtros:
+//   - Filtro IIR pasa-banda: ~13 muestras (6.5 ms)
+//   - Filtro Hilbert (FIR):   7 muestras (3.5 ms)
+//   - TOTAL:                 ~20 muestras (10 ms)
+//
+// Problema: Cuando detectamos fase=0°, el pico original ya pasó hace 10ms.
+//
+// Solución: PREDECIR el SIGUIENTE pico
+//   - Período de 21 Hz = 47.6 ms
+//   - Cuando detectamos fase=0°, sabemos que el pico ocurrió hace 10ms
+//   - El SIGUIENTE pico ocurrirá en: 47.6ms - 10ms = 37.6ms ≈ 38ms
+//   - Esperamos 38ms y disparamos el pulso sincronizado!
+//
+// Timeline con PREDICCIÓN:
+//   t=0ms    : Pico REAL #1 en señal de entrada
+//   t=10ms   : Detectamos fase=0° (pico filtrado) → INICIAMOS COUNTDOWN
+//   t=48ms   : Pico REAL #2 en señal de entrada → ¡PULSO SINCRONIZADO!
+//
+#define PERIOD_21HZ_MS 48           // Período de 21 Hz (1000/21 ≈ 47.6ms)
+#define FILTER_DELAY_MS 10          // Retardo de filtros IIR + Hilbert
+
+// ==============================================================================
+// AJUSTE DE FASE DEL PULSO (en milisegundos)
+// ==============================================================================
+// Ajusta cuándo se dispara el pulso respecto al pico de la señal:
+//   PHASE_ADJUST_MS = 0   → Pulso en el PICO (máximo)
+//   PHASE_ADJUST_MS > 0   → Pulso DESPUÉS del pico (retraso)
+//   PHASE_ADJUST_MS < 0   → Pulso ANTES del pico (adelanto)
+//
+// Tabla de referencia rápida:
+//   Desfase  |  PHASE_ADJUST_MS  |  Momento del pulso
+//   ---------|-------------------|-------------------
+//      0°    |        0          |  Pico máximo (por defecto)
+//     45°    |        6          |  Bajada después del pico
+//     90°    |       12          |  Cruce por cero descendente
+//    135°    |       18          |  Acercándose al valle
+//    180°    |       24          |  Valle mínimo
+//    -45°    |       -6          |  Subida antes del pico
+//    -90°    |      -12          |  Cruce por cero ascendente
+//
+// Conversión: 1 ms ≈ 7.5° a 21 Hz (período = 48 ms)
+//
+#define PHASE_ADJUST_MS 0  // ← MODIFICA ESTE VALOR (rango: -48 a +48 ms)
+
+#define PREDICTION_DELAY_MS (PERIOD_21HZ_MS - FILTER_DELAY_MS + PHASE_ADJUST_MS)
+#define PREDICTION_DELAY_SAMPLES (PREDICTION_DELAY_MS * 2)      // Muestras a 2000Hz
+
+// Estructura para predicción del siguiente pico
+struct PeakPredictor {
+  uint8_t countdown;
+  bool active;
+};
+
+PeakPredictor peakPredictor = {0, false};
+
 volatile bool triggerPulse = false;
 unsigned long pulseStartTime = 0;
 const unsigned long PULSE_DURATION = 5;
@@ -179,9 +237,11 @@ void loop() {
     int32_t envelope = fastMagnitude(real_part, imag_part);
     int16_t phase = fastPhase(real_part, imag_part);
 
+    // Detectar pico en señal filtrada (fase cercana a 0°)
     bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
                   (phase > -PHASE_THRESHOLD && phase < PHASE_THRESHOLD);
 
+    // VERSIÓN SIMPLE: Disparar inmediatamente cuando se detecta pico
     static bool wasAboveThreshold = false;
     if (isPeak && !wasAboveThreshold) {
       triggerPulse = true;
