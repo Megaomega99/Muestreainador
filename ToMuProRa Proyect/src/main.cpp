@@ -6,7 +6,7 @@ const int PULSE_OUTPUT_PIN = 10;
 
 volatile uint16_t rawSample = 0;
 volatile bool newSampleReady = false;
-
+bool inPulse = false;
 #define Q15_SHIFT 15
 
 const int32_t b0_q15 = 900;
@@ -29,7 +29,7 @@ int32_t hilbert_buffer[HILBERT_TAPS] = {0};
 uint8_t hilbert_index = 0;
 
 const int32_t MAGNITUDE_THRESHOLD = 80L << Q15_SHIFT;
-const int16_t PHASE_THRESHOLD = 5000;
+const int16_t PHASE_THRESHOLD = 16380;
 
 #define PERIOD_21HZ_MS 48
 #define FILTER_DELAY_MS 10
@@ -148,11 +148,13 @@ void loop() {
     digitalWrite(PULSE_OUTPUT_PIN, HIGH);
     pulseStartTime = millis();
     triggerPulse = false;
+    inPulse = true;
   }
 
-  if (digitalRead(PULSE_OUTPUT_PIN) == HIGH) {
+  if (inPulse) {
     if (millis() - pulseStartTime >= PULSE_DURATION) {
       digitalWrite(PULSE_OUTPUT_PIN, LOW);
+      inPulse = false;
     }
   }
 
@@ -198,7 +200,7 @@ void loop() {
     int16_t phase = fastPhase(real_part, imag_part);
 
     bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
-                  (phase > -PHASE_THRESHOLD && phase < PHASE_THRESHOLD);
+                  ((phase > -PHASE_THRESHOLD )&& (phase < PHASE_THRESHOLD));
 
     static bool wasAboveThreshold = true;
 
