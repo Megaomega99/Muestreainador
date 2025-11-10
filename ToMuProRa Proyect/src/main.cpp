@@ -35,18 +35,12 @@ uint8_t hilbert_index = 0;
 // ===== PARÁMETROS DE DETECCIÓN =====
 const int32_t MAGNITUDE_THRESHOLD = 50L << Q15_SHIFT;
 const int16_t PHASE_THRESHOLD = 2730;
-#define PERIOD_21HZ_MS 48
-#define FILTER_DELAY_MS 10
-#define PHASE_ADJUST_MS -1
-#define PREDICTION_DELAY_MS (PERIOD_21HZ_MS - FILTER_DELAY_MS)
-#define PREDICTION_DELAY_SAMPLES (PREDICTION_DELAY_MS * 2)
+#define PREDICTION_DELAY_SAMPLES 76
 
 // ===== CONTROL DE PULSOS =====
 volatile bool triggerPulse = false;
 unsigned long pulseStartTime = 0;
 const unsigned long PULSE_DURATION = 2;
-uint16_t pulseCount = 0;
-uint16_t peakDetectionCount = 0;
 uint16_t refractoryCountdown = 0;
 
 // ===== COLA DE PULSOS =====
@@ -244,7 +238,6 @@ void loop() {
 
     if (pulseQueueCount > 0 && pulseQueue[pulseQueueTail] == 0) {
       triggerPulse = true;
-      pulseCount++;
       pulseQueueTail = (pulseQueueTail + 1) % PULSE_QUEUE_SIZE;
       pulseQueueCount--;
     }
@@ -254,7 +247,6 @@ void loop() {
 
     // Detección de flanco ascendente
     if (isPeak && !wasAboveThreshold && refractoryCountdown == 0) {
-      peakDetectionCount++;
       if (pulseQueueCount < PULSE_QUEUE_SIZE) {
         pulseQueue[pulseQueueHead] = PREDICTION_DELAY_SAMPLES;
         pulseQueueHead = (pulseQueueHead + 1) % PULSE_QUEUE_SIZE;

@@ -139,7 +139,7 @@ uint8_t hilbert_index = 0;                     // Índice actual en el buffer ci
 ```
 **Buffer circular:** Como una cinta transportadora infinita que guarda las últimas 15 muestras.
 
-### Parámetros de detección (líneas 35-42)
+### Parámetros de detección (líneas 35-38)
 ```cpp
 const int32_t MAGNITUDE_THRESHOLD = 50L << Q15_SHIFT;
 ```
@@ -155,28 +155,22 @@ const int16_t PHASE_THRESHOLD = 2730;
 - **Umbral de fase:** Permite una tolerancia de ±15° alrededor de 180°
 
 ```cpp
-#define PERIOD_21HZ_MS 48              // Periodo de 21 Hz = 1000ms / 21 ≈ 48ms
-#define FILTER_DELAY_MS 10             // Retardo combinado de los filtros
-#define PHASE_ADJUST_MS -1             // Ajuste fino de sincronización
-#define PREDICTION_DELAY_MS (PERIOD_21HZ_MS - FILTER_DELAY_MS)  // = 38ms
-#define PREDICTION_DELAY_SAMPLES (PREDICTION_DELAY_MS * 2)       // = 76 muestras
+#define PREDICTION_DELAY_SAMPLES 76
 ```
 **Lógica del delay:**
-- Cuando detectamos un pico en la señal filtrada, ese pico está retrasado 10ms respecto al original
-- Para generar el pulso en el SIGUIENTE pico original, esperamos: 48ms - 10ms = 38ms
-- A 2000 Hz, 38ms = 76 muestras
+- Cuando detectamos un pico en la señal filtrada, ese pico está retrasado aproximadamente 10ms respecto al original
+- Para generar el pulso en el SIGUIENTE pico original, esperamos aproximadamente 38ms
+- A 2000 Hz, 38ms = 76 muestras (valor precalculado para mayor eficiencia)
 
-### Control de pulsos (líneas 44-50)
+### Control de pulsos (líneas 40-44)
 ```cpp
 volatile bool triggerPulse = false;     // Bandera: "debe generarse un pulso"
 unsigned long pulseStartTime = 0;       // Momento en que empezó el pulso actual
 const unsigned long PULSE_DURATION = 2; // Duración del pulso: 2ms
-uint16_t pulseCount = 0;                // Contador total de pulsos generados
-uint16_t peakDetectionCount = 0;        // Contador total de picos detectados
 uint16_t refractoryCountdown = 0;       // Tiempo restante de periodo refractario
 ```
 
-### Cola de pulsos (líneas 52-57)
+### Cola de pulsos (líneas 46-51)
 ```cpp
 #define PULSE_QUEUE_SIZE 4              // La cola puede contener hasta 4 pulsos
 uint16_t pulseQueue[PULSE_QUEUE_SIZE];  // Array con los countdowns de cada pulso
@@ -189,7 +183,7 @@ uint8_t pulseQueueCount = 0;            // Cantidad de pulsos actualmente en la 
 - `Tail` avanza cuando generamos un pulso
 - Si `Head == Tail`, la cola está vacía
 
-### Configuración del ADC (líneas 59-67)
+### Configuración del ADC (líneas 53-61)
 ```cpp
 void setupADC() {
   ADCSRA &= ~0x07;              // Limpiar bits de prescaler
@@ -206,7 +200,7 @@ void setupADC() {
 - ADIE: Llama a una función cuando termina la conversión
 - ADEN: Enciende el ADC
 
-### Configuración del Timer2 (líneas 69-79)
+### Configuración del Timer2 (líneas 63-73)
 ```cpp
 void setupTimer2() {
   noInterrupts();               // Desactivar interrupciones temporalmente
@@ -228,7 +222,7 @@ Frecuencia = 16,000,000 Hz / (Prescaler × (OCR2A + 1))
 ```
 **Resultado:** El Timer2 genera una interrupción cada 0.5ms (2000 veces por segundo).
 
-### Configuración del PWM (líneas 81-91)
+### Configuración del PWM (líneas 75-85)
 ```cpp
 void setupPWM() {
   pinMode(PWM_OUTPUT_PIN, OUTPUT);
@@ -247,7 +241,7 @@ void setupPWM() {
 - 255 = siempre encendido (5V)
 - 128 = 50% del tiempo encendido (2.5V promedio)
 
-### Interrupciones (líneas 94-102)
+### Interrupciones (líneas 87-95)
 ```cpp
 ISR(TIMER2_COMPA_vect) {
   ADCSRA |= (1 << ADSC);        // Iniciar conversión del ADC
@@ -263,7 +257,7 @@ ISR(ADC_vect) {
 ```
 **Esta interrupción se ejecuta cuando el ADC termina de leer**, guardando el resultado.
 
-### Algoritmo CORDIC (líneas 104-161)
+### Algoritmo CORDIC (líneas 97-154)
 ```cpp
 const int16_t cordic_angles[16] = {
   16384, 9672, 5110, 2594, 1302, 652, 326, 163,
@@ -295,10 +289,9 @@ struct CordicResult {
 3. **Iteraciones CORDIC** (líneas 142-155): 16 rotaciones sucesivas que "persiguen" el ángulo
 4. **Resultado** (líneas 157-160): Magnitud y fase calculados
 
-### Setup (líneas 163-173)
+### Setup (líneas 156-164)
 ```cpp
 void setup() {
-  Serial.begin(115200);                      // Comunicación serial a 115200 baudios
   pinMode(ANALOG_INPUT_PIN, INPUT);          // A0 como entrada
   pinMode(PWM_OUTPUT_PIN, OUTPUT);           // Pin 9 como salida
   pinMode(PULSE_OUTPUT_PIN, OUTPUT);         // Pin 10 como salida
@@ -309,9 +302,9 @@ void setup() {
 }
 ```
 
-### Loop principal (líneas 175-205)
+### Loop principal (líneas 166 en adelante)
 
-#### Control de pulso (líneas 180-193)
+#### Control de pulso
 ```cpp
 if (triggerPulse) {
   digitalWrite(PULSE_OUTPUT_PIN, HIGH);      // Pulso a 5V
@@ -332,24 +325,9 @@ if (inPulse) {
 - Espera 2ms
 - Baja el pin a 0V
 
-#### Reporte de estadísticas (líneas 196-205)
-```cpp
-static uint16_t lastPeakCount = 0;
-if (millis() - lastReportMillis >= 1000) {   // Cada segundo
-  Serial.print("Pulsos/seg: ");
-  Serial.print(pulseCount - lastPulseCount); // Pulsos en este segundo
-  Serial.print(" Hz | Picos detectados: ");
-  Serial.println(peakDetectionCount - lastPeakCount); // Picos en este segundo
-  lastPulseCount = pulseCount;
-  lastPeakCount = peakDetectionCount;
-  lastReportMillis = millis();
-}
-```
-Imprime estadísticas cada segundo por el puerto serial.
+### Procesamiento de señal
 
-### Procesamiento de señal (líneas 207-291)
-
-#### Lectura de muestra (líneas 208-215)
+#### Lectura de muestra
 ```cpp
 if (newSampleReady) {
   noInterrupts();                    // Pausar interrupciones
@@ -365,7 +343,7 @@ if (newSampleReady) {
 - Restamos 512 para centrar en 0 (rango: -512 a 511)
 - Multiplicamos por 32768 (shift izquierdo 15) para formato Q15
 
-#### Filtro IIR (líneas 217-227)
+#### Filtro IIR
 ```cpp
 int64_t num = ((int64_t)b0_q15 * x) + ((int64_t)b1_q15 * x1_q15) + ((int64_t)b2_q15 * x2_q15);
 num >>= Q15_SHIFT;
@@ -386,7 +364,7 @@ y1_q15 = y_filtered; // y[n-1] = y[n]
 ```
 Actualizar memoria del filtro para la próxima iteración.
 
-#### Filtro de Hilbert (líneas 229-239)
+#### Filtro de Hilbert
 ```cpp
 hilbert_buffer[hilbert_index] = y_filtered;             // Guardar muestra
 hilbert_index = (hilbert_index + 1) % HILBERT_TAPS;     // Avanzar índice circular
@@ -404,7 +382,7 @@ hilbert_output >>= Q15_SHIFT;
 ```
 **Convolución FIR:** Multiplica cada coeficiente por su muestra correspondiente y suma todo.
 
-#### Cálculo de magnitud y fase (líneas 241-247)
+#### Cálculo de magnitud y fase
 ```cpp
 int32_t real_part = y_filtered;              // Parte real = señal filtrada
 int32_t imag_part = (int32_t)hilbert_output; // Parte imaginaria = transformada de Hilbert
@@ -414,7 +392,7 @@ if (envelope < 0) envelope = -envelope;      // Asegurar que magnitud sea positi
 int16_t phase = cordic.phase;
 ```
 
-#### Detección de picos (líneas 249-253)
+#### Detección de picos
 ```cpp
 bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
               ((phase > (32768 - PHASE_THRESHOLD)) || (phase < (-32768 + PHASE_THRESHOLD)));
@@ -426,7 +404,7 @@ bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
 **¿Por qué ±180°?**
 El filtro de Hilbert invierte la fase, entonces los picos aparecen en ±180° en lugar de 0°.
 
-#### Gestión de cola de pulsos (líneas 255-266)
+#### Gestión de cola de pulsos
 ```cpp
 for (uint8_t i = 0; i < pulseQueueCount; i++) {
   uint8_t idx = (pulseQueueTail + i) % PULSE_QUEUE_SIZE;
@@ -438,23 +416,21 @@ Cada muestra (cada 0.5ms), decrementamos el countdown de todos los pulsos en la 
 ```cpp
 if (pulseQueueCount > 0 && pulseQueue[pulseQueueTail] == 0) {
   triggerPulse = true;                 // Activar generación de pulso
-  pulseCount++;                        // Incrementar contador
   pulseQueueTail = (pulseQueueTail + 1) % PULSE_QUEUE_SIZE;  // Avanzar cola
   pulseQueueCount--;                   // Un pulso menos en la cola
 }
 ```
 Cuando el countdown del pulso más antiguo llega a 0, se genera el pulso y se remueve de la cola.
 
-#### Periodo refractario (líneas 268-269)
+#### Periodo refractario
 ```cpp
 if (refractoryCountdown > 0) refractoryCountdown--;
 ```
 Decrementar el periodo refractario cada muestra.
 
-#### Detección de flanco ascendente (líneas 271-280)
+#### Detección de flanco ascendente
 ```cpp
 if (isPeak && !wasAboveThreshold && refractoryCountdown == 0) {
-  peakDetectionCount++;
   if (pulseQueueCount < PULSE_QUEUE_SIZE) {
     pulseQueue[pulseQueueHead] = PREDICTION_DELAY_SAMPLES;  // 76 muestras = 38ms
     pulseQueueHead = (pulseQueueHead + 1) % PULSE_QUEUE_SIZE;
@@ -467,11 +443,10 @@ wasAboveThreshold = isPeak;
 ```
 **Lógica:**
 1. Si hay pico Y no había pico antes (`!wasAboveThreshold`) Y no estamos en refractario
-2. Incrementar contador de picos
-3. Añadir pulso a la cola con countdown de 76 muestras (38ms)
-4. Activar periodo refractario de 20 muestras (10ms)
+2. Añadir pulso a la cola con countdown de 76 muestras (38ms)
+3. Activar periodo refractario de 20 muestras (10ms)
 
-#### Salida PWM (líneas 284-289)
+#### Salida PWM
 ```cpp
 int32_t y_amplified = (y_filtered * 7) >> 1;     // Amplificar x3.5
 int32_t output = (y_amplified >> Q15_SHIFT) + 512L;  // Convertir a 0-1023
@@ -568,12 +543,13 @@ const int16_t PHASE_THRESHOLD = 2730;  // ~15° de tolerancia
 - **Más bajo:** Más estricto (±10°, ±5°, etc.)
 
 ### Ajustar la sincronización del pulso
-Si los pulsos no coinciden exactamente con los picos:
+Si los pulsos no coinciden exactamente con los picos, puedes ajustar la constante:
 ```cpp
-#define PHASE_ADJUST_MS -1  // Ajuste fino en milisegundos
+#define PREDICTION_DELAY_SAMPLES 76  // Cambiar el valor según sea necesario
 ```
-- **Negativo:** Pulso más temprano
-- **Positivo:** Pulso más tarde
+- **Más alto:** Pulso más tarde
+- **Más bajo:** Pulso más temprano
+- Cada unidad representa 0.5ms (porque muestreamos a 2000 Hz)
 
 ## Troubleshooting
 
@@ -583,14 +559,14 @@ Si los pulsos no coinciden exactamente con los picos:
 3. Verificar conexiones de hardware
 
 ### Se detectan demasiados picos
-1. Reducir `MAGNITUDE_THRESHOLD`
-2. Aumentar `refractoryCountdown` (línea 279)
+1. Aumentar `MAGNITUDE_THRESHOLD` (no reducir)
+2. Aumentar el periodo refractario (cambiar el valor 20 en `refractoryCountdown = 20`)
 3. Verificar que la señal no tenga mucho ruido
 
 ### Pulsos desincronizados
-1. Ajustar `PHASE_ADJUST_MS`
-2. Verificar `FILTER_DELAY_MS` (puede variar según implementación)
-3. Revisar que la frecuencia de muestreo sea exactamente 2000 Hz
+1. Ajustar `PREDICTION_DELAY_SAMPLES` (aumentar para retrasar, disminuir para adelantar)
+2. Revisar que la frecuencia de muestreo sea exactamente 2000 Hz
+3. Verificar que el Timer2 esté configurado correctamente (OCR2A = 124, prescaler = 64)
 
 ## Recursos adicionales
 
