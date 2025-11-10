@@ -1,16 +1,17 @@
 #include <Arduino.h>
 
+// ===== CONFIGURACIÓN DE PINES =====
 const int ANALOG_INPUT_PIN = A0;
 const int PWM_OUTPUT_PIN = 9;
 const int PULSE_OUTPUT_PIN = 10;
 
+// ===== VARIABLES DE SISTEMA =====
 volatile uint16_t rawSample = 0;
 volatile bool newSampleReady = false;
 bool inPulse = false;
 #define Q15_SHIFT 15
 
-// Filtro pasa-banda IIR - 21 Hz ± 9 Hz (Q=2.333)
-// Rango: 12 Hz - 30 Hz
+// ===== FILTRO IIR PASA-BANDA (21 Hz ± 9 Hz, Q=2.333) =====
 const int32_t b0_q15 = 456;
 const int32_t b1_q15 = 0;
 const int32_t b2_q15 = -456;
@@ -22,10 +23,8 @@ int32_t x2_q15 = 0;
 int32_t y1_q15 = 0;
 int32_t y2_q15 = 0;
 
+// ===== FILTRO DE HILBERT FIR =====
 #define HILBERT_TAPS 15
-// Filtro de Hilbert FIR optimizado para 12-30 Hz
-// Diseñado con firwin2 para ganancia constante en banda de paso
-// Coeficientes en Q15, antisimétricos (centro = 0)
 const int16_t hilbert_coeffs[HILBERT_TAPS] = {
   -328, 0, -984, 0, -2621, 0, -6554, 0, 6554, 0, 2621, 0, 984, 0, 328
 };
@@ -33,53 +32,41 @@ const int16_t hilbert_coeffs[HILBERT_TAPS] = {
 int32_t hilbert_buffer[HILBERT_TAPS] = {0};
 uint8_t hilbert_index = 0;
 
-// Umbral de magnitud para detección de picos
-// Ajustar experimentalmente según amplitud de señal de 21 Hz
-const int32_t MAGNITUDE_THRESHOLD = 40L << Q15_SHIFT;
-// Umbral de fase más estricto: ±10° en Q15 (±1820 en int16)
-// Esto asegura que solo detectamos cerca del pico real
-const int16_t PHASE_THRESHOLD = 1820;  // ~10° (antes: 5000 = 27.5°)
-
+// ===== PARÁMETROS DE DETECCIÓN =====
+const int32_t MAGNITUDE_THRESHOLD = 50L << Q15_SHIFT;
+const int16_t PHASE_THRESHOLD = 2730;
 #define PERIOD_21HZ_MS 48
-// Retardo calculado del sistema de filtros (ver Fitros.ipynb):
-// - Filtro IIR (Q=2.333): ~13 muestras = 6.5 ms
-// - Filtro Hilbert FIR: 7 muestras = 3.5 ms
-// - TOTAL: ~20 muestras = 10 ms
 #define FILTER_DELAY_MS 10
-
-// Ajuste fino de fase del pulso (en ms)
-// Valores positivos: pulso más tarde (después del pico)
-// Valores negativos: pulso más temprano (antes del pico)
-// Ajustar este valor si el pulso no coincide exactamente con el pico
 #define PHASE_ADJUST_MS -1
-
-// Cálculo de cuándo llegará el siguiente pico
-// Detectamos pico en señal filtrada → predecimos siguiente pico original
-#define PREDICTION_DELAY_MS (PERIOD_21HZ_MS - FILTER_DELAY_MS + PHASE_ADJUST_MS)
+#define PREDICTION_DELAY_MS (PERIOD_21HZ_MS - FILTER_DELAY_MS)
 #define PREDICTION_DELAY_SAMPLES (PREDICTION_DELAY_MS * 2)
 
-struct PeakPredictor {
-  uint16_t countdown;  // Cambiado a uint16_t para soportar delays mayores
-  bool active;
-};
-
-PeakPredictor peakPredictor = {0, false};
-
+// ===== CONTROL DE PULSOS =====
 volatile bool triggerPulse = false;
 unsigned long pulseStartTime = 0;
 const unsigned long PULSE_DURATION = 2;
+uint16_t pulseCount = 0;
+uint16_t peakDetectionCount = 0;
+uint16_t refractoryCountdown = 0;
 
-// Configura ADC a 2000 Hz con interrupciones
+// ===== COLA DE PULSOS =====
+#define PULSE_QUEUE_SIZE 4
+uint16_t pulseQueue[PULSE_QUEUE_SIZE];
+uint8_t pulseQueueHead = 0;
+uint8_t pulseQueueTail = 0;
+uint8_t pulseQueueCount = 0;
+
+// ===== CONFIGURACIÓN DE ADC (2000 Hz) =====
 void setupADC() {
   ADCSRA &= ~0x07;
   ADCSRA |= 0x04;
   ADMUX = 0;
   ADMUX |= (1 << REFS0);
   ADCSRA |= (1 << ADIE);
-  ADCSRA |= (1 << ADEN);  // Habilitar el ADC
+  ADCSRA |= (1 << ADEN);
 }
 
-// Configura Timer2 para disparar ADC a 2000 Hz
+// ===== CONFIGURACIÓN DE TIMER2 (DISPARO DE ADC A 2000 Hz) =====
 void setupTimer2() {
   noInterrupts();
   TCCR2A = 0;
@@ -92,7 +79,7 @@ void setupTimer2() {
   interrupts();
 }
 
-// Configura PWM en pin 9 para salida de señal filtrada
+// ===== CONFIGURACIÓN DE PWM (SALIDA DE SEÑAL FILTRADA) =====
 void setupPWM() {
   pinMode(PWM_OUTPUT_PIN, OUTPUT);
   TCCR1A = 0;
@@ -104,6 +91,7 @@ void setupPWM() {
   OCR1A = 0;
 }
 
+// ===== INTERRUPCIONES =====
 ISR(TIMER2_COMPA_vect) {
   ADCSRA |= (1 << ADSC);
 }
@@ -113,28 +101,23 @@ ISR(ADC_vect) {
   newSampleReady = true;
 }
 
-// Tabla de ángulos CORDIC precalculados (en formato Q15)
+// ===== ALGORITMO CORDIC (CÁLCULO DE MAGNITUD Y FASE) =====
 const int16_t cordic_angles[16] = {
   16384, 9672, 5110, 2594, 1302, 652, 326, 163,
   81, 41, 20, 10, 5, 3, 1, 1
 };
 
-// Factor de escala CORDIC: 1/K ≈ 0.6072529350 en Q15
 const int32_t CORDIC_GAIN = 19898;
 
-// Estructura para resultado CORDIC (magnitud y fase)
 struct CordicResult {
   int32_t magnitude;
   int16_t phase;
 };
 
-// Calcula magnitud y fase simultáneamente usando CORDIC (vectoring mode)
 CordicResult fastCORDIC(int32_t real, int32_t imag) {
   CordicResult result = {0, 0};
-
   if (real == 0 && imag == 0) return result;
 
-  // Normalizar para evitar overflow
   int32_t abs_real = real >= 0 ? real : -real;
   int32_t abs_imag = imag >= 0 ? imag : -imag;
   int32_t max_val = abs_real > abs_imag ? abs_real : abs_imag;
@@ -146,48 +129,38 @@ CordicResult fastCORDIC(int32_t real, int32_t imag) {
     imag >>= shift;
   }
 
-  // Determinar cuadrante y ajustar
   int16_t angle = 0;
   int32_t x = real;
   int32_t y = imag;
 
-  // Rotar al primer cuadrante
   if (x < 0) {
     x = -x;
     y = -y;
-    angle = (y >= 0) ? 32768 : -32768;  // ±180°
+    angle = (y >= 0) ? 32768 : -32768;
   }
 
-  // Algoritmo CORDIC vectoring mode
   for (uint8_t i = 0; i < 16; i++) {
     int32_t x_new, y_new;
-
     if (y < 0) {
-      // Rotar en sentido horario
       x_new = x - (y >> i);
       y_new = y + (x >> i);
       angle -= cordic_angles[i];
     } else {
-      // Rotar en sentido antihorario
       x_new = x + (y >> i);
       y_new = y - (x >> i);
       angle += cordic_angles[i];
     }
-
     x = x_new;
     y = y_new;
   }
 
-  // La magnitud es el valor final de x (compensado por ganancia CORDIC)
-  // x_final = magnitud * K, donde K ≈ 1.646760258
-  // magnitud = x_final / K = x_final * (1/K)
   result.magnitude = (x * CORDIC_GAIN) >> Q15_SHIFT;
-  result.magnitude <<= shift;  // Restaurar escala original
+  result.magnitude <<= shift;
   result.phase = angle;
-
   return result;
 }
 
+// ===== SETUP =====
 void setup() {
   pinMode(ANALOG_INPUT_PIN, INPUT);
   pinMode(PWM_OUTPUT_PIN, OUTPUT);
@@ -198,7 +171,9 @@ void setup() {
   setupTimer2();
 }
 
+// ===== LOOP PRINCIPAL =====
 void loop() {
+  // Control de pulso de salida
   if (triggerPulse) {
     digitalWrite(PULSE_OUTPUT_PIN, HIGH);
     pulseStartTime = millis();
@@ -213,23 +188,21 @@ void loop() {
     }
   }
 
+  // ===== PROCESAMIENTO DE SEÑAL =====
   if (newSampleReady) {
     noInterrupts();
     newSampleReady = false;
     uint16_t adcValue = rawSample;
     interrupts();
 
+    // Convertir a Q15
     int32_t x = ((int32_t)adcValue - 512L) << Q15_SHIFT;
 
-    int64_t num = ((int64_t)b0_q15 * x) +
-                  ((int64_t)b1_q15 * x1_q15) +
-                  ((int64_t)b2_q15 * x2_q15);
+    // Filtro IIR pasa-banda
+    int64_t num = ((int64_t)b0_q15 * x) + ((int64_t)b1_q15 * x1_q15) + ((int64_t)b2_q15 * x2_q15);
     num >>= Q15_SHIFT;
-
-    int64_t den = ((int64_t)a1_q15 * y1_q15) +
-                  ((int64_t)a2_q15 * y2_q15);
+    int64_t den = ((int64_t)a1_q15 * y1_q15) + ((int64_t)a2_q15 * y2_q15);
     den >>= Q15_SHIFT;
-
     int32_t y_filtered = (int32_t)(num - den);
 
     x2_q15 = x1_q15;
@@ -237,6 +210,7 @@ void loop() {
     y2_q15 = y1_q15;
     y1_q15 = y_filtered;
 
+    // Filtro de Hilbert
     hilbert_buffer[hilbert_index] = y_filtered;
     hilbert_index = (hilbert_index + 1) % HILBERT_TAPS;
 
@@ -248,43 +222,54 @@ void loop() {
     }
     hilbert_output >>= Q15_SHIFT;
 
+    // Calcular magnitud y fase
     int32_t real_part = y_filtered;
     int32_t imag_part = (int32_t)hilbert_output;
-
-    // Calcular magnitud y fase simultáneamente con CORDIC
     CordicResult cordic = fastCORDIC(real_part, imag_part);
     int32_t envelope = cordic.magnitude;
+    if (envelope < 0) envelope = -envelope;
     int16_t phase = cordic.phase;
 
-    // Detectar pico en fase ±180° (inversión por filtro de Hilbert)
-    // En lugar de detectar fase=0°, detectamos cuando |fase| está cerca de 180°
+    // Detección de picos
     bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
                   ((phase > (32768 - PHASE_THRESHOLD)) || (phase < (-32768 + PHASE_THRESHOLD)));
 
-    static bool wasAboveThreshold = false;  // Cambio: inicializar en false
+    static bool wasAboveThreshold = false;
 
-    if (isPeak && !wasAboveThreshold && !peakPredictor.active) {
-      peakPredictor.countdown = PREDICTION_DELAY_SAMPLES;
-      peakPredictor.active = true;
+    // Gestión de cola de pulsos
+    for (uint8_t i = 0; i < pulseQueueCount; i++) {
+      uint8_t idx = (pulseQueueTail + i) % PULSE_QUEUE_SIZE;
+      if (pulseQueue[idx] > 0) pulseQueue[idx]--;
     }
-    wasAboveThreshold = isPeak;  // Cambio: usar isPeak en lugar de solo magnitud
 
-    if (peakPredictor.active) {
-      if (peakPredictor.countdown > 0) {
-        peakPredictor.countdown--;
-      } else {
-        triggerPulse = true;
-        peakPredictor.active = false;
+    if (pulseQueueCount > 0 && pulseQueue[pulseQueueTail] == 0) {
+      triggerPulse = true;
+      pulseCount++;
+      pulseQueueTail = (pulseQueueTail + 1) % PULSE_QUEUE_SIZE;
+      pulseQueueCount--;
+    }
+
+    // Periodo refractario
+    if (refractoryCountdown > 0) refractoryCountdown--;
+
+    // Detección de flanco ascendente
+    if (isPeak && !wasAboveThreshold && refractoryCountdown == 0) {
+      peakDetectionCount++;
+      if (pulseQueueCount < PULSE_QUEUE_SIZE) {
+        pulseQueue[pulseQueueHead] = PREDICTION_DELAY_SAMPLES;
+        pulseQueueHead = (pulseQueueHead + 1) % PULSE_QUEUE_SIZE;
+        pulseQueueCount++;
       }
+      refractoryCountdown = 20;
     }
 
-    // Salida PWM: señal filtrada amplificada
+    wasAboveThreshold = isPeak;
+
+    // Salida PWM
     int32_t y_amplified = (y_filtered * 7) >> 1;
     int32_t output = (y_amplified >> Q15_SHIFT) + 512L;
-
     if (output < 0) output = 0;
     if (output > 1023) output = 1023;
-
     OCR1A = output >> 2;
   }
 }
