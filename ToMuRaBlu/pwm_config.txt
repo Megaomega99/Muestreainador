@@ -1,0 +1,58 @@
+CONFIGURACIÓN PWM PARA nRF52840 (Arduino Nano 33 BLE)
+======================================================
+
+PROBLEMA ACTUAL:
+- PWM de Arduino: ~500 Hz (muy bajo)
+- Filtro RC: 1kΩ + 100nF = fc 1.6 kHz
+- Ripple muy visible porque PWM está solo 1.6 octavas debajo de fc
+
+OBJETIVO:
+- PWM de al menos 20 kHz
+- Con fc=1.6kHz, atenuación del PWM sería ~-22 dB (bueno)
+
+OPCIONES:
+
+1. PWM POR SOFTWARE (Usando TIMER3 @ 2024 Hz)
+   - Frecuencia máxima: 2024/2 = 1012 Hz (no mejora nada)
+   - Descartado
+
+2. PWM HARDWARE DEL nRF52840 (NRF_PWM0)
+   - Frecuencia base: 16 MHz
+   - Contador: 16 bits
+   - Frecuencia PWM = 16 MHz / TOP
+
+   Para PWM de 20 kHz con 8 bits de resolución:
+   - Resolución: 256 steps
+   - TOP = 16,000,000 / 20,000 / 256 = 3.125
+   - No es entero, ajustar:
+
+   Opción A: 20 kHz con resolución reducida
+   - TOP = 800 → freq = 16M/800 = 20 kHz
+   - Resolución = 800 steps (~10 bits) ✓ MEJOR
+
+   Opción B: 31.25 kHz con 8 bits
+   - TOP = 512 → freq = 16M/512 = 31.25 kHz
+   - Resolución = 512 steps (9 bits)
+
+   Opción C: 62.5 kHz con 8 bits
+   - TOP = 256 → freq = 16M/256 = 62.5 kHz
+   - Resolución = 256 steps (8 bits) ✓ ÓPTIMO
+
+3. USAR TIMER SEPARADO PARA PWM DE ALTA FRECUENCIA
+   - Usar TIMER4 para generar PWM vía PPI
+   - Complejo pero factible
+
+RECOMENDACIÓN:
+==============
+Configurar NRF_PWM0 con:
+- Frecuencia: 62.5 kHz (TOP=256)
+- Resolución: 8 bits (0-255)
+- Pin: D9 (mapear a canal PWM)
+
+Con fc_RC = 1.6 kHz y f_PWM = 62.5 kHz:
+- Separación: ~5.3 octavas
+- Atenuación: ~-32 dB (excelente, ripple imperceptible)
+
+CÓDIGO NECESARIO:
+=================
+Ver archivo main.cpp, función setupPWM_Hardware()

@@ -6,7 +6,10 @@
       "Bash(platformio run)",
       "Bash(python:*)",
       "Bash(pip install:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(platformio run:*)",
+      "Bash(dir:*)",
+      "Bash(wmic path Win32_SerialPort get:*)"
     ],
     "deny": [],
     "ask": []

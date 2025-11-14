@@ -11,12 +11,22 @@ volatile bool newSampleReady = false;
 bool inPulse = false;
 #define Q15_SHIFT 15
 
-// ===== FILTRO IIR PASA-BANDA (21 Hz ± 9 Hz, Q=2.333) =====
-const int32_t b0_q15 = 456;
-const int32_t b1_q15 = 0;
-const int32_t b2_q15 = -456;
-const int32_t a1_q15 = -64482;
-const int32_t a2_q15 = 31855;
+// ===== VALORES POR DEFECTO (21 Hz ± 9 Hz, Q=2.333) =====
+const int32_t DEFAULT_b0_q15 = 456;
+const int32_t DEFAULT_b1_q15 = 0;
+const int32_t DEFAULT_b2_q15 = -456;
+const int32_t DEFAULT_a1_q15 = -64482;
+const int32_t DEFAULT_a2_q15 = 31855;
+const int32_t DEFAULT_MAGNITUDE_THRESHOLD = 50L;
+const int16_t DEFAULT_PHASE_THRESHOLD = 2730;
+const uint16_t DEFAULT_PREDICTION_DELAY = 76;
+
+// ===== FILTRO IIR PASA-BANDA (VARIABLES MODIFICABLES) =====
+int32_t b0_q15 = DEFAULT_b0_q15;
+int32_t b1_q15 = DEFAULT_b1_q15;
+int32_t b2_q15 = DEFAULT_b2_q15;
+int32_t a1_q15 = DEFAULT_a1_q15;
+int32_t a2_q15 = DEFAULT_a2_q15;
 
 int32_t x1_q15 = 0;
 int32_t x2_q15 = 0;
@@ -25,17 +35,24 @@ int32_t y2_q15 = 0;
 
 // ===== FILTRO DE HILBERT FIR =====
 #define HILBERT_TAPS 15
-const int16_t hilbert_coeffs[HILBERT_TAPS] = {
+
+// Coeficientes por defecto (21 Hz)
+const int16_t DEFAULT_hilbert_coeffs[HILBERT_TAPS] = {
+  -328, 0, -984, 0, -2621, 0, -6554, 0, 6554, 0, 2621, 0, 984, 0, 328
+};
+
+// Coeficientes modificables
+int16_t hilbert_coeffs[HILBERT_TAPS] = {
   -328, 0, -984, 0, -2621, 0, -6554, 0, 6554, 0, 2621, 0, 984, 0, 328
 };
 
 int32_t hilbert_buffer[HILBERT_TAPS] = {0};
 uint8_t hilbert_index = 0;
 
-// ===== PARÁMETROS DE DETECCIÓN =====
-const int32_t MAGNITUDE_THRESHOLD = 50L << Q15_SHIFT;
-const int16_t PHASE_THRESHOLD = 2730;
-#define PREDICTION_DELAY_SAMPLES 76
+// ===== PARÁMETROS DE DETECCIÓN (MODIFICABLES) =====
+int32_t MAGNITUDE_THRESHOLD = DEFAULT_MAGNITUDE_THRESHOLD << Q15_SHIFT;
+int16_t PHASE_THRESHOLD = DEFAULT_PHASE_THRESHOLD;
+uint16_t PREDICTION_DELAY_SAMPLES = DEFAULT_PREDICTION_DELAY;
 
 // ===== CONTROL DE PULSOS =====
 volatile bool triggerPulse = false;
@@ -49,6 +66,12 @@ uint16_t pulseQueue[PULSE_QUEUE_SIZE];
 uint8_t pulseQueueHead = 0;
 uint8_t pulseQueueTail = 0;
 uint8_t pulseQueueCount = 0;
+
+// ===== COMUNICACIÓN SERIAL NO BLOQUEANTE =====
+#define SERIAL_BUFFER_SIZE 128
+char serialBuffer[SERIAL_BUFFER_SIZE];
+uint8_t serialIndex = 0;
+bool commandReady = false;
 
 // ===== CONFIGURACIÓN DE ADC (2000 Hz) =====
 void setupADC() {
@@ -154,8 +177,225 @@ CordicResult fastCORDIC(int32_t real, int32_t imag) {
   return result;
 }
 
+// ===== FUNCIONES DE COMUNICACIÓN SERIAL =====
+void resetFilterStates() {
+  // Resetear estados del filtro IIR
+  noInterrupts();
+  x1_q15 = 0;
+  x2_q15 = 0;
+  y1_q15 = 0;
+  y2_q15 = 0;
+
+  // Resetear buffer de Hilbert
+  for (uint8_t i = 0; i < HILBERT_TAPS; i++) {
+    hilbert_buffer[i] = 0;
+  }
+  hilbert_index = 0;
+  interrupts();
+}
+
+void restoreDefaultParameters() {
+  noInterrupts();
+  b0_q15 = DEFAULT_b0_q15;
+  b1_q15 = DEFAULT_b1_q15;
+  b2_q15 = DEFAULT_b2_q15;
+  a1_q15 = DEFAULT_a1_q15;
+  a2_q15 = DEFAULT_a2_q15;
+
+  // Restaurar coeficientes de Hilbert
+  for (uint8_t i = 0; i < HILBERT_TAPS; i++) {
+    hilbert_coeffs[i] = DEFAULT_hilbert_coeffs[i];
+  }
+
+  MAGNITUDE_THRESHOLD = DEFAULT_MAGNITUDE_THRESHOLD << Q15_SHIFT;
+  PHASE_THRESHOLD = DEFAULT_PHASE_THRESHOLD;
+  PREDICTION_DELAY_SAMPLES = DEFAULT_PREDICTION_DELAY;
+  interrupts();
+
+  resetFilterStates();
+  Serial.println("OK:DEFAULT_RESTORED");
+}
+
+void processCommand(char* cmd) {
+  // Eliminar espacios al inicio y final
+  while (*cmd == ' ' || *cmd == '\t') cmd++;
+
+  uint8_t len = strlen(cmd);
+  while (len > 0 && (cmd[len-1] == ' ' || cmd[len-1] == '\t')) {
+    cmd[--len] = '\0';
+  }
+
+  // Debug: mostrar comando recibido
+  Serial.print("DEBUG:CMD_RECEIVED:");
+  Serial.println(cmd);
+
+  // Comando: RESET - Restaurar valores por defecto
+  if (strcmp(cmd, "RESET") == 0) {
+    restoreDefaultParameters();
+    return;
+  }
+
+  // Comando: GET_STATUS - Obtener parámetros actuales
+  if (strcmp(cmd, "GET_STATUS") == 0) {
+    Serial.print("STATUS:");
+    Serial.print(b0_q15); Serial.print(",");
+    Serial.print(b1_q15); Serial.print(",");
+    Serial.print(b2_q15); Serial.print(",");
+    Serial.print(a1_q15); Serial.print(",");
+    Serial.print(a2_q15); Serial.print(",");
+    Serial.print(MAGNITUDE_THRESHOLD >> Q15_SHIFT); Serial.print(",");
+    Serial.print(PHASE_THRESHOLD); Serial.print(",");
+    Serial.println(PREDICTION_DELAY_SAMPLES);
+    return;
+  }
+
+  // Comando: SET_FILTER:b0,b1,b2,a1,a2
+  if (strncmp(cmd, "SET_FILTER:", 11) == 0) {
+    char* params = cmd + 11;
+    int32_t temp_b0, temp_b1, temp_b2, temp_a1, temp_a2;
+
+    int parsed = sscanf(params, "%ld,%ld,%ld,%ld,%ld", &temp_b0, &temp_b1, &temp_b2, &temp_a1, &temp_a2);
+    if (parsed == 5) {
+      noInterrupts();
+      b0_q15 = temp_b0;
+      b1_q15 = temp_b1;
+      b2_q15 = temp_b2;
+      a1_q15 = temp_a1;
+      a2_q15 = temp_a2;
+      interrupts();
+
+      resetFilterStates();
+      Serial.println("OK:FILTER_SET");
+    } else {
+      Serial.print("ERROR:INVALID_FILTER_PARAMS:");
+      Serial.println(parsed);
+    }
+    return;
+  }
+
+  // Comando: SET_DETECTION:mag_threshold,phase_threshold,prediction_delay
+  if (strncmp(cmd, "SET_DETECTION:", 14) == 0) {
+    char* params = cmd + 14;
+    int32_t temp_mag;
+    int16_t temp_phase;
+    uint16_t temp_delay;
+
+    int parsed = sscanf(params, "%ld,%d,%u", &temp_mag, &temp_phase, &temp_delay);
+    if (parsed == 3) {
+      noInterrupts();
+      MAGNITUDE_THRESHOLD = temp_mag << Q15_SHIFT;
+      PHASE_THRESHOLD = temp_phase;
+      PREDICTION_DELAY_SAMPLES = temp_delay;
+      interrupts();
+
+      Serial.println("OK:DETECTION_SET");
+    } else {
+      Serial.print("ERROR:INVALID_DETECTION_PARAMS:");
+      Serial.println(parsed);
+    }
+    return;
+  }
+
+  // Comando: SET_HILBERT:h0,h1,h2,...,h14
+  if (strncmp(cmd, "SET_HILBERT:", 12) == 0) {
+    char* params = cmd + 12;
+    int temp_hilbert[HILBERT_TAPS];
+
+    // Parsear 15 coeficientes (usar %d porque int16_t es int en Arduino)
+    int parsed = sscanf(params, "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
+                       &temp_hilbert[0], &temp_hilbert[1], &temp_hilbert[2], &temp_hilbert[3],
+                       &temp_hilbert[4], &temp_hilbert[5], &temp_hilbert[6], &temp_hilbert[7],
+                       &temp_hilbert[8], &temp_hilbert[9], &temp_hilbert[10], &temp_hilbert[11],
+                       &temp_hilbert[12], &temp_hilbert[13], &temp_hilbert[14]);
+
+    if (parsed == HILBERT_TAPS) {
+      noInterrupts();
+      for (uint8_t i = 0; i < HILBERT_TAPS; i++) {
+        hilbert_coeffs[i] = (int16_t)temp_hilbert[i];
+      }
+      interrupts();
+
+      resetFilterStates();
+      Serial.println("OK:HILBERT_SET");
+    } else {
+      Serial.print("ERROR:INVALID_HILBERT_PARAMS:");
+      Serial.println(parsed);
+    }
+    return;
+  }
+
+  // Comando: SET_ALL:b0,b1,b2,a1,a2,mag,phase,delay
+  if (strncmp(cmd, "SET_ALL:", 8) == 0) {
+    char* params = cmd + 8;
+    int32_t temp_b0, temp_b1, temp_b2, temp_a1, temp_a2, temp_mag;
+    int16_t temp_phase;
+    uint16_t temp_delay;
+
+    int parsed = sscanf(params, "%ld,%ld,%ld,%ld,%ld,%ld,%d,%u",
+               &temp_b0, &temp_b1, &temp_b2, &temp_a1, &temp_a2,
+               &temp_mag, &temp_phase, &temp_delay);
+
+    if (parsed == 8) {
+      noInterrupts();
+      b0_q15 = temp_b0;
+      b1_q15 = temp_b1;
+      b2_q15 = temp_b2;
+      a1_q15 = temp_a1;
+      a2_q15 = temp_a2;
+      MAGNITUDE_THRESHOLD = temp_mag << Q15_SHIFT;
+      PHASE_THRESHOLD = temp_phase;
+      PREDICTION_DELAY_SAMPLES = temp_delay;
+      interrupts();
+
+      resetFilterStates();
+      Serial.println("OK:ALL_SET");
+    } else {
+      Serial.print("ERROR:INVALID_ALL_PARAMS:");
+      Serial.println(parsed);
+    }
+    return;
+  }
+
+  Serial.print("ERROR:UNKNOWN_COMMAND:");
+  Serial.println(cmd);
+}
+
+void checkSerialCommand() {
+  // Lectura no bloqueante de comandos seriales
+  while (Serial.available() > 0 && !commandReady) {
+    char c = Serial.read();
+
+    if (c == '\n' || c == '\r') {
+      if (serialIndex > 0) {
+        serialBuffer[serialIndex] = '\0';
+        commandReady = true;
+        break;  // Salir del while para procesar el comando
+      }
+      // Si serialIndex == 0, ignorar \n o \r vacíos
+    } else if (c >= 32 && c <= 126) {  // Solo caracteres ASCII imprimibles
+      if (serialIndex < SERIAL_BUFFER_SIZE - 1) {
+        serialBuffer[serialIndex++] = c;
+      } else {
+        // Buffer lleno, reiniciar
+        serialIndex = 0;
+        Serial.println("ERROR:BUFFER_OVERFLOW");
+      }
+    }
+    // Ignorar otros caracteres de control
+  }
+
+  // Procesar comando si está listo
+  if (commandReady) {
+    processCommand(serialBuffer);
+    serialIndex = 0;
+    commandReady = false;
+  }
+}
+
 // ===== SETUP =====
 void setup() {
+  Serial.begin(115200);
+  Serial.println("READY");
   pinMode(ANALOG_INPUT_PIN, INPUT);
   pinMode(PWM_OUTPUT_PIN, OUTPUT);
   pinMode(PULSE_OUTPUT_PIN, OUTPUT);
@@ -167,6 +407,9 @@ void setup() {
 
 // ===== LOOP PRINCIPAL =====
 void loop() {
+  // Verificar comandos seriales (no bloqueante)
+  checkSerialCommand();
+
   // Control de pulso de salida
   if (triggerPulse) {
     digitalWrite(PULSE_OUTPUT_PIN, HIGH);
