@@ -11,6 +11,15 @@ volatile bool newSampleReady = false;
 bool inPulse = false;
 #define Q15_SHIFT 15
 
+// ===== FUNCIONES AUXILIARES Q15 =====
+// Saturación segura de Q30 a Q15
+inline int32_t saturate_q30_to_q15(int64_t value) {
+  int64_t temp = value >> Q15_SHIFT;
+  if (temp > 2147483647L) return 2147483647L;
+  if (temp < -2147483648L) return -2147483648L;
+  return (int32_t)temp;
+}
+
 // ===== VALORES POR DEFECTO (21 Hz ± 9 Hz, Q=2.333) =====
 const int32_t DEFAULT_b0_q15 = 456;
 const int32_t DEFAULT_b1_q15 = 0;
@@ -19,7 +28,7 @@ const int32_t DEFAULT_a1_q15 = -64482;
 const int32_t DEFAULT_a2_q15 = 31855;
 const int32_t DEFAULT_MAGNITUDE_THRESHOLD = 50L;
 const int16_t DEFAULT_PHASE_THRESHOLD = 2730;
-const uint16_t DEFAULT_PREDICTION_DELAY = 76;
+const uint16_t DEFAULT_PREDICTION_DELAY = 75;
 
 // ===== FILTRO IIR PASA-BANDA (VARIABLES MODIFICABLES) =====
 int32_t b0_q15 = DEFAULT_b0_q15;
@@ -57,7 +66,7 @@ uint16_t PREDICTION_DELAY_SAMPLES = DEFAULT_PREDICTION_DELAY;
 // ===== CONTROL DE PULSOS =====
 volatile bool triggerPulse = false;
 unsigned long pulseStartTime = 0;
-const unsigned long PULSE_DURATION = 2;
+const unsigned long PULSE_DURATION = 10;  // 10ms para mejor visibilidad en osciloscopio
 uint16_t refractoryCountdown = 0;
 
 // ===== COLA DE PULSOS =====
@@ -72,6 +81,13 @@ uint8_t pulseQueueCount = 0;
 char serialBuffer[SERIAL_BUFFER_SIZE];
 uint8_t serialIndex = 0;
 bool commandReady = false;
+
+// ===== TRANSMISIÓN DE DATOS =====
+// Frecuencia de muestreo ADC: 2000 Hz
+// Frecuencia de transmisión serial deseada: 500 Hz
+// Decimación = 2000 / 500 = 4
+// Uso de ancho de banda: ~65% (7500 bytes/s de 11520 bytes/s @ 115200 baudios)
+const uint8_t SERIAL_DECIMATION = 4;
 
 // ===== CONFIGURACIÓN DE ADC (2000 Hz) =====
 void setupADC() {
@@ -273,29 +289,6 @@ void processCommand(char* cmd) {
     return;
   }
 
-  // Comando: SET_DETECTION:mag_threshold,phase_threshold,prediction_delay
-  if (strncmp(cmd, "SET_DETECTION:", 14) == 0) {
-    char* params = cmd + 14;
-    int32_t temp_mag;
-    int16_t temp_phase;
-    uint16_t temp_delay;
-
-    int parsed = sscanf(params, "%ld,%d,%u", &temp_mag, &temp_phase, &temp_delay);
-    if (parsed == 3) {
-      noInterrupts();
-      MAGNITUDE_THRESHOLD = temp_mag << Q15_SHIFT;
-      PHASE_THRESHOLD = temp_phase;
-      PREDICTION_DELAY_SAMPLES = temp_delay;
-      interrupts();
-
-      Serial.println("OK:DETECTION_SET");
-    } else {
-      Serial.print("ERROR:INVALID_DETECTION_PARAMS:");
-      Serial.println(parsed);
-    }
-    return;
-  }
-
   // Comando: SET_HILBERT:h0,h1,h2,...,h14
   if (strncmp(cmd, "SET_HILBERT:", 12) == 0) {
     char* params = cmd + 12;
@@ -362,8 +355,13 @@ void processCommand(char* cmd) {
 
 void checkSerialCommand() {
   // Lectura no bloqueante de comandos seriales
-  while (Serial.available() > 0 && !commandReady) {
+  // Procesar hasta 50 bytes por llamada para evitar bloqueos
+  uint8_t bytesProcessed = 0;
+  const uint8_t MAX_BYTES_PER_CALL = 50;
+
+  while (Serial.available() > 0 && !commandReady && bytesProcessed < MAX_BYTES_PER_CALL) {
     char c = Serial.read();
+    bytesProcessed++;
 
     if (c == '\n' || c == '\r') {
       if (serialIndex > 0) {
@@ -381,7 +379,7 @@ void checkSerialCommand() {
         Serial.println("ERROR:BUFFER_OVERFLOW");
       }
     }
-    // Ignorar otros caracteres de control
+    // Ignorar otros caracteres de control (incluyendo bytes binarios)
   }
 
   // Procesar comando si está listo
@@ -432,39 +430,44 @@ void loop() {
     uint16_t adcValue = rawSample;
     interrupts();
 
-    // Convertir a Q15
+    // Convertir a Q15 (centrado en cero)
     int32_t x = ((int32_t)adcValue - 512L) << Q15_SHIFT;
 
-    // Filtro IIR pasa-banda
-    int64_t num = ((int64_t)b0_q15 * x) + ((int64_t)b1_q15 * x1_q15) + ((int64_t)b2_q15 * x2_q15);
-    num >>= Q15_SHIFT;
-    int64_t den = ((int64_t)a1_q15 * y1_q15) + ((int64_t)a2_q15 * y2_q15);
-    den >>= Q15_SHIFT;
-    int32_t y_filtered = (int32_t)(num - den);
+    // Filtro IIR pasa-banda biquad
+    // Ecuación: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+    // Los coeficientes a1 y a2 ya vienen con signo correcto desde Python
+    int64_t numerator = ((int64_t)b0_q15 * x) + ((int64_t)b1_q15 * x1_q15) + ((int64_t)b2_q15 * x2_q15);
+    int64_t denominator = ((int64_t)a1_q15 * y1_q15) + ((int64_t)a2_q15 * y2_q15);
 
+    // Normalizar y calcular salida con saturación (a1, a2 ya incluyen el signo negativo)
+    int32_t y_filtered = saturate_q30_to_q15(numerator - denominator);
+
+    // Actualizar estados del filtro
     x2_q15 = x1_q15;
     x1_q15 = x;
     y2_q15 = y1_q15;
     y1_q15 = y_filtered;
 
-    // Filtro de Hilbert
+    // Filtro de Hilbert (transformada de 90 grados para obtener componente imaginaria)
     hilbert_buffer[hilbert_index] = y_filtered;
     hilbert_index = (hilbert_index + 1) % HILBERT_TAPS;
 
+    // Calcular salida del filtro Hilbert (FIR)
     int64_t hilbert_output = 0;
     uint8_t buf_idx = hilbert_index;
     for (int i = 0; i < HILBERT_TAPS; i++) {
       hilbert_output += ((int64_t)hilbert_coeffs[i] * hilbert_buffer[buf_idx]);
       buf_idx = (buf_idx + 1) % HILBERT_TAPS;
     }
-    hilbert_output >>= Q15_SHIFT;
+    int32_t imag_part = saturate_q30_to_q15(hilbert_output);
 
-    // Calcular magnitud y fase
+    // Calcular magnitud (envolvente) y fase usando CORDIC
+    // real_part = señal filtrada, imag_part = transformada de Hilbert
     int32_t real_part = y_filtered;
-    int32_t imag_part = (int32_t)hilbert_output;
     CordicResult cordic = fastCORDIC(real_part, imag_part);
+
+    // La magnitud de CORDIC ya debe ser positiva
     int32_t envelope = cordic.magnitude;
-    if (envelope < 0) envelope = -envelope;
     int16_t phase = cordic.phase;
 
     // Detección de picos
@@ -500,11 +503,68 @@ void loop() {
 
     wasAboveThreshold = isPeak;
 
-    // Salida PWM
-    int32_t y_amplified = (y_filtered * 7) >> 1;
-    int32_t output = (y_amplified >> Q15_SHIFT) + 512L;
-    if (output < 0) output = 0;
-    if (output > 1023) output = 1023;
-    OCR1A = output >> 2;
+    // Salida PWM (envolvente de la señal)
+    // La envolvente está en formato Q15, normalizarla a rango 0-255 para PWM de 8 bits
+    // Escalar para que sea visible: envelope está en Q15, dividir por 2^15 y luego amplificar
+    int32_t envelope_scaled = envelope >> Q15_SHIFT;  // Convertir de Q15 a entero
+
+    // Amplificar la envolvente para PWM (ajustar ganancia según sea necesario)
+    int32_t pwm_value = envelope_scaled * 2;  // Factor de escala ajustable
+
+    // Limitar a rango válido de PWM (0-255)
+    if (pwm_value < 0) pwm_value = 0;
+    if (pwm_value > 255) pwm_value = 255;
+
+    OCR1A = (uint8_t)pwm_value;
+
+    // ===== TRANSMISIÓN DE DATOS PARA VISUALIZACIÓN (500 Hz) =====
+    // Decimación configurable para alcanzar frecuencia deseada
+    static uint8_t viz_counter = 0;
+    if (++viz_counter >= SERIAL_DECIMATION) {
+      viz_counter = 0;
+
+      // Protocolo binario: 0xAA 0x55 | ADC(2) | Filtered(4) | Envelope(4) | Phase(2) | PulseFlag(1) | CRC(1)
+      // Total: 16 bytes por paquete
+
+      // Start bytes (sincronización)
+      Serial.write(0xAA);
+      Serial.write(0x55);
+
+      // ADC raw (0-1023, 10 bits en uint16_t)
+      Serial.write((uint8_t)(adcValue & 0xFF));
+      Serial.write((uint8_t)((adcValue >> 8) & 0xFF));
+
+      // Señal filtrada (Q15 format, int32_t)
+      Serial.write((uint8_t)(y_filtered & 0xFF));
+      Serial.write((uint8_t)((y_filtered >> 8) & 0xFF));
+      Serial.write((uint8_t)((y_filtered >> 16) & 0xFF));
+      Serial.write((uint8_t)((y_filtered >> 24) & 0xFF));
+
+      // Envolvente/Magnitud: convertir de entero a Q15 format para consistencia
+      // envelope está en unidades ADC (0-512), convertir a Q15: envelope << 15
+      int32_t envelope_q15 = envelope << Q15_SHIFT;
+      Serial.write((uint8_t)(envelope_q15 & 0xFF));
+      Serial.write((uint8_t)((envelope_q15 >> 8) & 0xFF));
+      Serial.write((uint8_t)((envelope_q15 >> 16) & 0xFF));
+      Serial.write((uint8_t)((envelope_q15 >> 24) & 0xFF));
+
+      // Fase (Q15 format, int16_t, rango -32768 a 32767)
+      Serial.write((uint8_t)(phase & 0xFF));
+      Serial.write((uint8_t)((phase >> 8) & 0xFF));
+
+      // Flag de pulso (1 = pulso activo, 0 = sin pulso)
+      uint8_t pulseFlag = inPulse ? 1 : 0;
+      Serial.write(pulseFlag);
+
+      // Checksum simple (XOR de todos los datos)
+      uint8_t checksum = (uint8_t)(adcValue & 0xFF) ^ (uint8_t)((adcValue >> 8) & 0xFF);
+      checksum ^= (uint8_t)(y_filtered & 0xFF) ^ (uint8_t)((y_filtered >> 8) & 0xFF);
+      checksum ^= (uint8_t)((y_filtered >> 16) & 0xFF) ^ (uint8_t)((y_filtered >> 24) & 0xFF);
+      checksum ^= (uint8_t)(envelope_q15 & 0xFF) ^ (uint8_t)((envelope_q15 >> 8) & 0xFF);
+      checksum ^= (uint8_t)((envelope_q15 >> 16) & 0xFF) ^ (uint8_t)((envelope_q15 >> 24) & 0xFF);
+      checksum ^= (uint8_t)(phase & 0xFF) ^ (uint8_t)((phase >> 8) & 0xFF);
+      checksum ^= pulseFlag;
+      Serial.write(checksum);
+    }
   }
 }

@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Control de Filtro IIR - Arduino</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="header-left">
+                <h1 class="header-title">
+                    <span class="icon">📊</span>
+                    Control de Filtro IIR
+                </h1>
+                <p class="header-subtitle">Sistema de procesamiento de señales en tiempo real</p>
+            </div>
+            <div class="header-right">
+                <img src="/static/images/with_padding.png" alt="Logo" class="logo">
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <!-- Connection Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">🔌</span>
+                        Conexión Serial
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div class="form-group">
+                        <label for="port-select">Puerto Serial</label>
+                        <div class="input-group">
+                            <select id="port-select" class="select-input">
+                                <option value="">Seleccione un puerto...</option>
+                            </select>
+                            <button id="refresh-ports" class="btn btn-icon" title="Actualizar puertos">
+                                <span class="icon">🔄</span>
+                            </button>
+                        </div>
+                    </div>
+                    <button id="connect-btn" class="btn btn-primary btn-block">
+                        <span class="btn-text">Conectar</span>
+                    </button>
+                    <div id="connection-status" class="status-badge status-disconnected">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Desconectado</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Filter Parameters Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">⚙️</span>
+                        Parámetros del Filtro
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div class="form-group">
+                        <label for="center-freq">Frecuencia Central (Hz)</label>
+                        <div class="input-with-value">
+                            <input type="range" id="center-freq" class="range-input"
+                                   min="1" max="500" step="0.5" value="21">
+                            <input type="number" id="center-freq-input" class="number-input"
+                                   min="1" max="500" step="0.5" value="21">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="bandwidth">Ancho de Banda (Hz)</label>
+                        <div class="input-with-value">
+                            <input type="range" id="bandwidth" class="range-input"
+                                   min="1" max="100" step="0.5" value="9">
+                            <input type="number" id="bandwidth-input" class="number-input"
+                                   min="1" max="100" step="0.5" value="9">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Factor Q (calculado)</label>
+                        <div class="info-display">
+                            <span id="q-factor" class="info-value">2.333</span>
+                        </div>
+                    </div>
+
+                    <button id="load-defaults" class="btn btn-secondary btn-block">
+                        <span class="icon">↺</span>
+                        <span class="btn-text">Valores por Defecto (21 Hz)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Detection Parameters Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">🎯</span>
+                        Parámetros de Detección
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div class="form-group">
+                        <label for="magnitude-threshold">Umbral de Magnitud (% del rango, 0-1)</label>
+                        <div class="input-with-value">
+                            <input type="range" id="magnitude-threshold" class="range-input"
+                                   min="0.001" max="1.0" step="0.001" value="0.05">
+                            <input type="number" id="magnitude-threshold-input" class="number-input"
+                                   min="0.001" max="1.0" step="0.001" value="0.05">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="phase-threshold">Umbral de Fase (grados desde ±180°)</label>
+                        <div class="input-with-value">
+                            <input type="range" id="phase-threshold" class="range-input"
+                                   min="0.1" max="180" step="0.1" value="15">
+                            <input type="number" id="phase-threshold-input" class="number-input"
+                                   min="0.1" max="180" step="0.1" value="15">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="prediction-delay">Retraso de Predicción (muestras)</label>
+                        <div class="input-with-value">
+                            <input type="range" id="prediction-delay" class="range-input"
+                                   min="50" max="500" step="1" value="76">
+                            <input type="number" id="prediction-delay-input" class="number-input"
+                                   min="50" max="500" step="1" value="76">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="panel">
+                <div class="panel-body">
+                    <button id="calculate-btn" class="btn btn-success btn-block">
+                        <span class="icon">🧮</span>
+                        <span class="btn-text">Calcular Coeficientes</span>
+                    </button>
+
+                    <button id="send-btn" class="btn btn-primary btn-block" disabled>
+                        <span class="icon">📤</span>
+                        <span class="btn-text">Enviar a Arduino</span>
+                    </button>
+
+                    <button id="reset-arduino-btn" class="btn btn-warning btn-block" disabled>
+                        <span class="icon">⚠️</span>
+                        <span class="btn-text">Restaurar Arduino</span>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Bode Diagram - Magnitude Plot -->
+            <div class="panel panel-large">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">📈</span>
+                        Diagrama de Bode - Magnitud
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div id="magnitude-plot" class="plot-container"></div>
+                </div>
+            </div>
+
+            <!-- Bode Diagram - Phase Plot -->
+            <div class="panel panel-large">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">📉</span>
+                        Diagrama de Bode - Fase
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div id="phase-plot" class="plot-container"></div>
+                </div>
+            </div>
+
+            <!-- Info Cards -->
+            <div class="info-grid">
+                <!-- Filter Coefficients Card -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3 class="panel-title">
+                            <span class="icon">🔢</span>
+                            Coeficientes IIR (Q15)
+                        </h3>
+                    </div>
+                    <div class="panel-body">
+                        <div class="coefficients-grid">
+                            <div class="coeff-item">
+                                <span class="coeff-label">b0_q15:</span>
+                                <span class="coeff-value" id="coeff-b0">-</span>
+                            </div>
+                            <div class="coeff-item">
+                                <span class="coeff-label">b1_q15:</span>
+                                <span class="coeff-value" id="coeff-b1">-</span>
+                            </div>
+                            <div class="coeff-item">
+                                <span class="coeff-label">b2_q15:</span>
+                                <span class="coeff-value" id="coeff-b2">-</span>
+                            </div>
+                            <div class="coeff-item">
+                                <span class="coeff-label">a1_q15:</span>
+                                <span class="coeff-value" id="coeff-a1">-</span>
+                            </div>
+                            <div class="coeff-item">
+                                <span class="coeff-label">a2_q15:</span>
+                                <span class="coeff-value" id="coeff-a2">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Delay Information Card -->
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3 class="panel-title">
+                            <span class="icon">⏱️</span>
+                            Información de Retrasos
+                        </h3>
+                    </div>
+                    <div class="panel-body">
+                        <div class="delay-info">
+                            <div class="delay-item">
+                                <span class="delay-label">Filtro IIR:</span>
+                                <span class="delay-value" id="delay-iir">- muestras</span>
+                            </div>
+                            <div class="delay-item">
+                                <span class="delay-label">Filtro Hilbert:</span>
+                                <span class="delay-value" id="delay-hilbert">- muestras</span>
+                            </div>
+                            <div class="delay-item delay-total">
+                                <span class="delay-label">TOTAL:</span>
+                                <span class="delay-value" id="delay-total">- muestras</span>
+                            </div>
+                            <div class="delay-item">
+                                <span class="delay-label">Tiempo:</span>
+                                <span class="delay-value" id="delay-ms">- ms</span>
+                            </div>
+                            <div class="delay-item delay-recommended">
+                                <span class="delay-label">Recomendado:</span>
+                                <span class="delay-value" id="delay-recommended">- muestras</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Real-Time Visualization Header -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">📡</span>
+                        Visualización en Tiempo Real (200 Hz - Ventana de 0.5s)
+                    </h2>
+                    <button id="toggle-stream" class="btn btn-sm btn-primary" disabled>
+                        <span class="icon">▶️</span>
+                        <span class="btn-text">Iniciar Stream</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Señal Original con Pulsos -->
+            <div class="panel panel-large">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">📊</span>
+                        Señal Original (con pulsos detectados)
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div id="voltage-plot" class="plot-container"></div>
+                </div>
+            </div>
+
+            <!-- Señal Filtrada -->
+            <div class="panel panel-large">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">📉</span>
+                        Señal Filtrada
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div id="filtered-plot" class="plot-container"></div>
+                </div>
+            </div>
+
+            <!-- Envolvente (Magnitud) -->
+            <div class="panel panel-large">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">📈</span>
+                        Envolvente (Magnitud)
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div id="magnitude-stream-plot" class="plot-container"></div>
+                </div>
+            </div>
+
+            <!-- Fase -->
+            <div class="panel panel-large">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">🔄</span>
+                        Fase
+                    </h2>
+                </div>
+                <div class="panel-body">
+                    <div id="phase-stream-plot" class="plot-container"></div>
+                </div>
+            </div>
+
+            <!-- Console Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">
+                        <span class="icon">💬</span>
+                        Consola de Mensajes
+                    </h2>
+                    <button id="clear-console" class="btn btn-sm btn-ghost">
+                        <span class="icon">🗑️</span>
+                        Limpiar
+                    </button>
+                </div>
+                <div class="panel-body">
+                    <div id="console" class="console"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <p>Megaomega engineering for well-being © 2025</p>
+    </footer>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

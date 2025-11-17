@@ -1,0 +1,39 @@
+ESTRUCTURA DEL PROYECTO - INTERFAZ WEB
+======================================
+
+python_interface/
+│
+├── Backend (Python)
+│   ├── web_server.py              # Servidor FastAPI principal
+│   ├── filter_calculator.py       # Cálculo de coeficientes IIR y Hilbert
+│   ├── serial_communication.py    # Comunicación con Arduino
+│   ├── config.py                  # Configuración centralizada
+│   └── __init__.py                # Inicialización del paquete
+│
+├── Frontend (Web)
+│   ├── templates/
+│   │   └── index.html            # Interfaz HTML principal
+│   ├── static/
+│   │   ├── css/
+│   │   │   └── styles.css        # Estilos modernos
+│   │   ├── js/
+│   │   │   └── app.js            # Lógica JavaScript
+│   │   └── images/
+│   │       └── with_padding.png  # Logo
+│
+├── Configuración
+│   ├── requirements.txt           # Dependencias Python
+│   ├── .gitignore                # Archivos a ignorar en git
+│   └── start_web.bat             # Script de inicio rápido
+│
+└── Total: 12 archivos funcionales
+
+INICIO RÁPIDO:
+1. pip install -r requirements.txt
+2. python web_server.py (o start_web.bat)
+3. Abrir http://localhost:8000
+
+CONFIGURACIÓN:
+- Editar config.py para cambiar puerto, baudrate, etc.
+
+Megaomega engineering for well-being © 2025

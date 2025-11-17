@@ -72,16 +72,23 @@ class FilterCalculator:
         # Convertir a formato Q15 para Arduino
         q15_scale = 2**15
 
-        # Los coeficientes 'b' pueden ser muy pequeños, así que necesitamos escalarlos
-        # Para mantener precisión en Q15
-        # Encontrar el máximo coeficiente
-        max_b = max(abs(b0_norm), abs(b2_norm))
-
-        # Escalar para usar el rango completo de Q15 (pero dejar margen)
-        # El gain máximo del filtro pasa-banda es aproximadamente Q
-        # Queremos que b0_q15 sea razonable pero no sature
-        target_b0 = 456.0 / 32768.0  # 0.0139... (valor exacto del original)
-        scale_factor = target_b0 / max_b if max_b > 0 else 1.0
+        # Los coeficientes 'b' del filtro pasa-banda son proporcionales al ancho de banda
+        # b0 = alpha = sin(w0)/(2*Q)
+        # Para evitar saturación en Q15 pero mantener buena ganancia, normalizamos
+        # el filtro para que tenga ganancia unitaria en la frecuencia central
+        
+        # Calcular ganancia en frecuencia central
+        gain_at_center = abs(b0_norm)  # La ganancia máxima del pasa-banda es aproximadamente b0
+        
+        # Escalar para que la ganancia máxima sea razonable
+        # Queremos usar el rango dinámico de Q15 eficientemente
+        # Un valor típico es que b0_q15 esté entre 100 y 2000 para buena precisión
+        desired_b0_magnitude = 0.02  # 2% del rango, da buen balance entre precisión y saturación
+        
+        if gain_at_center > 0:
+            scale_factor = desired_b0_magnitude / gain_at_center
+        else:
+            scale_factor = 1.0
 
         # Aplicar escalado a coeficientes b
         b0_scaled = b0_norm * scale_factor
@@ -93,10 +100,7 @@ class FilterCalculator:
         b1_q15 = int(round(b1_scaled * q15_scale))
         b2_q15 = int(round(b2_scaled * q15_scale))
 
-        # IMPORTANTE: El código Arduino usa: y = num - (a1*y1 + a2*y2)
-        # El Arduino espera: a1=-64482 (negativo) y a2=31855 (positivo)
-        # a1_norm es negativo (-1.9678), a2_norm es positivo (0.9721)
-        # Almacenamos: +a1_norm (negativo) y -a2_norm (negativo) pero luego negamos a2
+        # Los coeficientes 'a' no se escalan, se usan directamente
         a1_q15 = int(round(a1_norm * q15_scale))
         a2_q15 = int(round(a2_norm * q15_scale))
 
@@ -148,10 +152,18 @@ class FilterCalculator:
                                      center_freq: float,
                                      num_taps: int = 15) -> Dict[str, any]:
         """
-        Calcula coeficientes del filtro de Hilbert FIR optimizado para una frecuencia
+        Calcula coeficientes del filtro de Hilbert FIR para desfase de 90 grados
+
+        El filtro de Hilbert se usa para obtener la componente en cuadratura (imaginaria)
+        de la señal analítica, permitiendo calcular la envolvente instantánea.
+
+        Método simplificado:
+        1. Hilbert ideal: h[n] = (2/π) * sin²(πn/2) / n
+        2. Ventana Hamming para reducir efecto Gibbs
+        3. Normalización a 0.2 para evitar saturación Q15
 
         Args:
-            center_freq: Frecuencia central en Hz
+            center_freq: Frecuencia central en Hz (usado solo para referencia)
             num_taps: Número de coeficientes (debe ser impar, default: 15)
 
         Returns:
@@ -161,32 +173,30 @@ class FilterCalculator:
         if num_taps % 2 == 0:
             num_taps += 1
 
-        # Diseñar filtro Hilbert usando firwin
-        # El transformador de Hilbert es un filtro pasa-todo con desfase de 90°
-        h = signal.firwin(num_taps, [center_freq * 0.3, center_freq * 3.0],
-                         pass_zero=False, fs=self.fs, window='hamming')
+        # Crear núcleo ideal del transformador de Hilbert
+        # h[n] = 2/π * sin²(π*n/2) / n para n ≠ 0, h[0] = 0
+        center = (num_taps - 1) // 2
+        n = np.arange(num_taps) - center
 
-        # Convertir a transformador de Hilbert
-        # Multiplicar por el núcleo de Hilbert ideal
-        n = np.arange(num_taps)
-        center = (num_taps - 1) / 2
-
-        # Núcleo de Hilbert: h[n] = 2/π * sin²(π(n-center)/2) / (n-center) para n ≠ center
+        # Núcleo de Hilbert ideal
         hilbert_kernel = np.zeros(num_taps)
-        for i in range(num_taps):
-            if i != center:
-                m = i - center
-                hilbert_kernel[i] = (2.0 / np.pi) * (np.sin(np.pi * m / 2.0)**2) / m
-            # else: hilbert_kernel[center] = 0
+        for i, ni in enumerate(n):
+            if ni != 0:
+                # Fórmula del filtro de Hilbert: h[n] = (2/π) * sin²(πn/2) / n
+                hilbert_kernel[i] = (2.0 / np.pi) * (np.sin(np.pi * ni / 2.0)**2) / ni
+            # h[0] = 0 (ya inicializado)
 
-        # Aplicar ventana para suavizar
+        # Aplicar ventana de Hamming para reducir oscilaciones (efecto Gibbs)
         window = signal.windows.hamming(num_taps)
         hilbert_kernel *= window
 
-        # Normalizar
-        hilbert_kernel /= np.max(np.abs(hilbert_kernel))
+        # Normalizar para que el valor máximo use el rango de Q15 eficientemente
+        # Usar 0.2 como máximo para evitar saturación (esto es ~6554 en Q15)
+        max_coeff = np.max(np.abs(hilbert_kernel))
+        if max_coeff > 0:
+            hilbert_kernel = hilbert_kernel * (0.2 / max_coeff)
 
-        # Convertir a formato Q15
+        # Convertir a formato Q15 (escala de 2^15 = 32768)
         q15_scale = 2**15
         hilbert_coeffs_q15 = np.round(hilbert_kernel * q15_scale).astype(np.int16)
 
@@ -237,7 +247,7 @@ class FilterCalculator:
             'total_delay_samples': total_delay_samples,
             'total_delay_ms': total_delay_ms,
             'recommended_prediction_delay': recommended_delay,
-            'current_prediction_delay': 76
+            'current_prediction_delay': 75
         }
 
     def get_default_coefficients(self) -> Dict[str, any]:
@@ -256,7 +266,7 @@ class FilterCalculator:
             'center_freq': 21.0,
             'bandwidth': 9.0,
             'q_factor': 2.333,
-            'prediction_delay_samples': 76
+            'prediction_delay_samples': 75
         }
 
 

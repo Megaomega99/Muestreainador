@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(test:*)",
+      "Bash(tree:*)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(platformio run:*)",
+      "Bash(\"C:\\Users\\emanu\\.platformio\\penv\\Scripts\\platformio.exe\" run --target upload)"
     ],
     "deny": [],
     "ask": []

@@ -1,0 +1,112 @@
+╔═══════════════════════════════════════════════════════════════╗
+║                INTERFAZ WEB - CONTROL FILTRO IIR              ║
+║         Megaomega engineering for well-being (c) 2025         ║
+╚═══════════════════════════════════════════════════════════════╝
+
+INICIO RAPIDO
+=============
+
+1. Instalar dependencias:
+   > pip install -r requirements.txt
+
+2. Iniciar servidor (elegir uno):
+   > start_web.bat
+   o
+   > python web_server.py
+
+3. Abrir navegador:
+   http://localhost:8000
+
+
+ARCHIVOS PRINCIPALES
+====================
+
+Backend:
+  - web_server.py           Servidor FastAPI
+  - filter_calculator.py    Calculos de filtros
+  - serial_communication.py Comunicacion Arduino
+  - config.py              Configuracion
+
+Frontend:
+  - templates/index.html   Interfaz web
+  - static/css/styles.css  Estilos
+  - static/js/app.js       Logica JavaScript
+
+
+CARACTERISTICAS
+===============
+
+✓ Diseño moderno con gradientes azul/morado
+✓ Logo en esquina superior derecha
+✓ Graficas interactivas (zoom, pan, hover)
+✓ Sliders con valores en tiempo real
+✓ WebSocket para logs instantaneos
+✓ Responsive (desktop, tablet, movil)
+✓ Calculo de coeficientes IIR (Q15)
+✓ Calculo de coeficientes Hilbert (15 taps)
+✓ Envio de parametros al Arduino
+✓ Consola con mensajes coloreados
+
+
+CONFIGURACION
+=============
+
+Editar config.py para cambiar:
+  - Puerto del servidor (default: 8000)
+  - Baudrate serial (default: 115200)
+  - Parametros por defecto del filtro
+  - Limites de rangos
+
+
+ENDPOINTS API
+=============
+
+Serial:
+  GET  /api/ports              Lista puertos
+  POST /api/connect            Conectar
+  POST /api/disconnect         Desconectar
+
+Filtro:
+  POST /api/calculate-filter   Calcular coeficientes
+  POST /api/send-to-arduino    Enviar al Arduino
+  POST /api/reset-arduino      Reset a default
+  GET  /api/default-parameters Valores default
+
+WebSocket:
+  WS   /ws                     Mensajes en tiempo real
+
+
+ESTRUCTURA
+==========
+
+python_interface/
+├── web_server.py              Servidor principal
+├── filter_calculator.py       Calculos
+├── serial_communication.py    Serial
+├── config.py                  Configuracion
+├── __init__.py               Package init
+├── requirements.txt          Dependencias
+├── start_web.bat            Inicio rapido
+├── .gitignore               Git ignore
+├── templates/
+│   └── index.html           HTML
+└── static/
+    ├── css/styles.css       CSS
+    ├── js/app.js            JavaScript
+    └── images/
+        └── with_padding.png Logo
+
+
+TOTAL: 12 archivos funcionales (sin documentacion)
+
+
+SOPORTE
+=======
+
+- Verificar que todas las dependencias esten instaladas
+- Revisar la consola del servidor para errores
+- Revisar consola del navegador (F12) para errores JS
+- Asegurar que el Arduino este conectado
+
+
+VERSION: 2.0.0

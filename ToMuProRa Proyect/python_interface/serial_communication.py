@@ -85,10 +85,6 @@ class ArduinoController:
             return False
 
         try:
-            # Limpiar buffer de entrada antes de enviar
-            if self.serial_port.in_waiting > 0:
-                self.serial_port.read(self.serial_port.in_waiting)
-
             # Construir comando de texto
             cmd = (f"SET_ALL:"
                    f"{params['b0_q15']},"
@@ -112,36 +108,56 @@ class ArduinoController:
             print(f"  phase_threshold = {params['phase_threshold']}")
             print(f"  prediction_delay = {params['prediction_delay']}")
 
-            # Enviar comando
-            self.serial_port.write(cmd.encode('ascii'))
-            self.serial_port.flush()
+            # Intentar enviar comando con retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                if attempt > 0:
+                    print(f"\n  Reintento {attempt + 1}/{max_retries}...")
 
-            # Esperar a que se procese
-            time.sleep(0.1)
+                # Limpiar buffer de entrada y esperar entre paquetes binarios
+                # (500Hz = 2ms entre paquetes, esperamos 20ms para asegurar)
+                time.sleep(0.02)
+                if self.serial_port.in_waiting > 0:
+                    discarded = self.serial_port.read(self.serial_port.in_waiting)
+                    print(f"  Buffer limpiado: {len(discarded)} bytes")
 
-            # Leer todas las respuestas (incluye DEBUG y respuesta final)
-            success = False
-            max_attempts = 10
-            for _ in range(max_attempts):
-                response = self.read_line(timeout=0.2)
-                if response:
-                    print(f"  <- {response}")
+                # Enviar comando
+                self.serial_port.write(cmd.encode('ascii'))
+                self.serial_port.flush()
 
-                    if response.startswith("OK:"):
-                        print("✓ Parámetros configurados correctamente")
-                        success = True
+                # Esperar a que se procese
+                time.sleep(0.15)
+
+                # Leer todas las respuestas (incluye DEBUG y respuesta final)
+                success = False
+                error_received = False
+                max_read_attempts = 10
+
+                for _ in range(max_read_attempts):
+                    response = self.read_line(timeout=0.2)
+                    if response:
+                        print(f"  <- {response}")
+
+                        if response.startswith("OK:"):
+                            print("✓ Parámetros configurados correctamente")
+                            return True
+                        elif response.startswith("ERROR:"):
+                            print(f"✗ Error del Arduino: {response}")
+                            error_received = True
+                            break
+                        # Ignorar líneas DEBUG
+                    else:
                         break
-                    elif response.startswith("ERROR:"):
-                        print(f"✗ Error del Arduino: {response}")
-                        return False
-                    # Ignorar líneas DEBUG
-                else:
-                    break
 
-            if success:
-                return True
+                # Si recibimos error, reintentar
+                if error_received:
+                    continue
 
-            print("⚠ No se recibió confirmación del Arduino")
+                # Si no hubo respuesta, reintentar
+                if not success and attempt < max_retries - 1:
+                    continue
+
+            print("⚠ No se recibió confirmación del Arduino después de todos los intentos")
             return False
 
         except Exception as e:
@@ -160,40 +176,55 @@ class ArduinoController:
             return False
 
         try:
-            # Limpiar buffer de entrada
-            if self.serial_port.in_waiting > 0:
-                self.serial_port.read(self.serial_port.in_waiting)
-
             cmd = "RESET\n"
             print("\n=== RESTAURANDO VALORES POR DEFECTO ===")
 
-            self.serial_port.write(cmd.encode('ascii'))
-            self.serial_port.flush()
+            # Intentar enviar comando con retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                if attempt > 0:
+                    print(f"\n  Reintento {attempt + 1}/{max_retries}...")
 
-            time.sleep(0.1)
+                # Limpiar buffer de entrada y esperar entre paquetes binarios
+                # (500Hz = 2ms entre paquetes, esperamos 20ms para asegurar)
+                time.sleep(0.02)
+                if self.serial_port.in_waiting > 0:
+                    discarded = self.serial_port.read(self.serial_port.in_waiting)
+                    print(f"  Buffer limpiado: {len(discarded)} bytes")
 
-            # Leer todas las respuestas
-            success = False
-            max_attempts = 10
-            for _ in range(max_attempts):
-                response = self.read_line(timeout=0.2)
-                if response:
-                    print(f"  <- {response}")
+                # Enviar comando
+                self.serial_port.write(cmd.encode('ascii'))
+                self.serial_port.flush()
 
-                    if response.startswith("OK:"):
-                        print("✓ Valores por defecto restaurados")
-                        success = True
+                # Esperar a que se procese
+                time.sleep(0.15)
+
+                # Leer todas las respuestas (incluye DEBUG y respuesta final)
+                success = False
+                error_received = False
+                max_read_attempts = 10
+
+                for _ in range(max_read_attempts):
+                    response = self.read_line(timeout=0.2)
+                    if response:
+                        print(f"  <- {response}")
+
+                        if response.startswith("OK:"):
+                            print("✓ Valores por defecto restaurados")
+                            return True
+                        elif response.startswith("ERROR:"):
+                            print(f"✗ Error del Arduino: {response}")
+                            error_received = True
+                            break
+                        # Ignorar líneas DEBUG
+                    else:
                         break
-                    elif response.startswith("ERROR:"):
-                        print(f"✗ Error del Arduino: {response}")
-                        return False
-                else:
-                    break
 
-            if success:
-                return True
+                # Si recibimos error, reintentar
+                if error_received:
+                    continue
 
-            print("⚠ No se recibió confirmación del Arduino")
+            print("⚠ No se recibió confirmación del Arduino después de todos los intentos")
             return False
 
         except Exception as e:
@@ -347,7 +378,7 @@ class ArduinoController:
 
     def read_line(self, timeout: Optional[float] = None) -> Optional[str]:
         """
-        Lee una línea del Arduino
+        Lee una línea del Arduino, ignorando datos binarios del stream de visualización
 
         Args:
             timeout: Timeout opcional en segundos
@@ -363,43 +394,113 @@ class ArduinoController:
             if timeout is not None:
                 self.serial_port.timeout = timeout
 
-            line = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
+            # Intentar hasta 10 veces para encontrar una línea de texto válida
+            for _ in range(10):
+                raw_line = self.serial_port.readline()
+
+                # Ignorar líneas que contienen el header binario (0xAA 0x55)
+                if b'\xaa\x55' in raw_line or b'\xaa\xaa' in raw_line:
+                    continue
+
+                # Decodificar y limpiar
+                line = raw_line.decode('utf-8', errors='ignore').strip()
+
+                # Ignorar líneas vacías o con demasiados caracteres no ASCII
+                if line and sum(1 for c in line if ord(c) > 127) < len(line) / 2:
+                    self.serial_port.timeout = old_timeout
+                    return line
 
             self.serial_port.timeout = old_timeout
-            return line if line else None
+            return None
 
         except Exception as e:
             print(f"Error al leer línea: {e}")
             return None
 
-    def request_status(self) -> Optional[Dict[str, any]]:
+    def read_visualization_data(self) -> Optional[Dict[str, float]]:
         """
-        Solicita el estado actual del Arduino
+        Lee un paquete de datos de visualización desde Arduino
+
+        Protocolo: 0xAA 0x55 | ADC(2) | Filtered(4) | Envelope(4) | Phase(2) | PulseFlag(1) | CRC(1)
+        Total: 16 bytes
 
         Returns:
-            Diccionario con el estado o None si hubo error
+            Diccionario con los datos en unidades correctas o None si error
         """
-        if not self.connected:
+        if not self.connected or not self.serial_port:
             return None
 
         try:
-            # Enviar comando de solicitud de estado
-            message = bytearray([0xF0, 0x02, 0xF1])  # CMD 0x02 = GET_STATUS
-            self.serial_port.write(message)
-            self.serial_port.flush()
+            # Buscar header (0xAA 0x55)
+            if self.serial_port.in_waiting < 16:
+                return None
 
-            # Esperar respuesta (timeout de 1 segundo)
-            time.sleep(0.1)
-            if self.serial_port.in_waiting > 0:
-                response = self.serial_port.read(self.serial_port.in_waiting)
-                # Aquí se debería parsear la respuesta según el protocolo
-                # Por ahora, retornar un diccionario vacío
-                return {'raw_response': response.hex()}
+            # Leer hasta encontrar header
+            while self.serial_port.in_waiting >= 16:
+                byte1 = self.serial_port.read(1)
+                if byte1 == b'\xAA':
+                    byte2 = self.serial_port.read(1)
+                    if byte2 == b'\x55':
+                        # Header encontrado, leer resto del paquete
+                        data = self.serial_port.read(14)  # 14 bytes restantes
+
+                        if len(data) != 14:
+                            continue
+
+                        # Parsear datos
+                        adc_raw = struct.unpack('<H', data[0:2])[0]  # uint16_t little-endian
+                        filtered = struct.unpack('<i', data[2:6])[0]  # int32_t little-endian
+                        envelope = struct.unpack('<i', data[6:10])[0]  # int32_t little-endian
+                        phase = struct.unpack('<h', data[10:12])[0]  # int16_t little-endian
+                        pulse_flag = data[12]  # uint8_t (1 = pulso activo, 0 = sin pulso)
+                        checksum_rx = data[13]
+
+                        # Verificar checksum
+                        checksum_calc = data[0] ^ data[1]
+                        for i in range(2, 13):
+                            checksum_calc ^= data[i]
+
+                        if checksum_calc != checksum_rx:
+                            continue  # Checksum inválido, buscar siguiente paquete
+
+                        # Convertir a unidades físicas
+                        Q15_SCALE = 32768.0  # 2^15
+                        ADC_BITS = 1024.0  # 2^10 (ADC de 10 bits)
+                        VOLTAGE_REF = 5.0  # Voltaje de referencia del ADC
+
+                        # ADC: 0-1023 (10 bits) -> 0-5V
+                        voltage = (adc_raw / 1023.0) * VOLTAGE_REF
+
+                        # Filtered: Q15 -> unidades ADC centradas -> voltios
+                        # El ADC se centró en 512, así que el rango es ±512 unidades -> ±2.5V
+                        filtered_adc_units = filtered / Q15_SCALE
+                        filtered_volts = filtered_adc_units * (VOLTAGE_REF / ADC_BITS)
+
+                        # Envelope: Q15 -> unidades ADC -> voltios (magnitud)
+                        # Arduino convierte: magnitude_adc_units << 15 -> Q15
+                        # Python convierte: Q15 / 32768 -> magnitude_adc_units -> voltios
+                        # La magnitud es siempre positiva
+                        magnitude_adc_units = abs(envelope / Q15_SCALE)
+                        magnitude_volts = magnitude_adc_units * (VOLTAGE_REF / ADC_BITS)
+
+                        # Phase: Q15 -> grados (-180 a 180)
+                        phase_degrees = (phase / 32768.0) * 180.0
+
+                        return {
+                            'timestamp': time.time(),
+                            'adc_raw': adc_raw,
+                            'voltage': voltage,
+                            'filtered': filtered_volts,
+                            'magnitude': magnitude_volts,
+                            'phase_degrees': phase_degrees,
+                            'phase_radians': (phase / 32768.0) * 3.14159265359,
+                            'pulse_active': bool(pulse_flag)  # True si hay pulso activo
+                        }
 
             return None
 
         except Exception as e:
-            print(f"Error al solicitar estado: {e}")
+            print(f"Error al leer datos de visualización: {e}")
             return None
 
 
