@@ -72,37 +72,17 @@ class FilterCalculator:
         # Convertir a formato Q15 para Arduino
         q15_scale = 2**15
 
-        # Los coeficientes 'b' del filtro pasa-banda son proporcionales al ancho de banda
-        # b0 = alpha = sin(w0)/(2*Q)
-        # Para evitar saturación en Q15 pero mantener buena ganancia, normalizamos
-        # el filtro para que tenga ganancia unitaria en la frecuencia central
-        
-        # Calcular ganancia en frecuencia central
-        gain_at_center = abs(b0_norm)  # La ganancia máxima del pasa-banda es aproximadamente b0
-        
-        # Escalar para que la ganancia máxima sea razonable
-        # Queremos usar el rango dinámico de Q15 eficientemente
-        # Un valor típico es que b0_q15 esté entre 100 y 2000 para buena precisión
-        desired_b0_magnitude = 0.02  # 2% del rango, da buen balance entre precisión y saturación
-        
-        if gain_at_center > 0:
-            scale_factor = desired_b0_magnitude / gain_at_center
-        else:
-            scale_factor = 1.0
-
-        # Aplicar escalado a coeficientes b
-        b0_scaled = b0_norm * scale_factor
-        b1_scaled = b1_norm * scale_factor
-        b2_scaled = b2_norm * scale_factor
-
-        # Convertir a enteros Q15
-        b0_q15 = int(round(b0_scaled * q15_scale))
-        b1_q15 = int(round(b1_scaled * q15_scale))
-        b2_q15 = int(round(b2_scaled * q15_scale))
-
-        # Los coeficientes 'a' no se escalan, se usan directamente
+        # Convertir coeficientes normalizados directamente a Q15
+        # NO aplicar escalado adicional - esto rompía el filtro
+        # Los coeficientes ya están normalizados por a0
+        b0_q15 = int(round(b0_norm * q15_scale))
+        b1_q15 = int(round(b1_norm * q15_scale))
+        b2_q15 = int(round(b2_norm * q15_scale))
         a1_q15 = int(round(a1_norm * q15_scale))
         a2_q15 = int(round(a2_norm * q15_scale))
+
+        # Para compatibilidad con código existente
+        scale_factor = 1.0
 
         # Calcular respuesta en frecuencia
         w, h = signal.freqz(b, a, worN=2048, fs=self.fs)

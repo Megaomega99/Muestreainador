@@ -476,11 +476,12 @@ class ArduinoController:
                         filtered_adc_units = filtered / Q15_SCALE
                         filtered_volts = filtered_adc_units * (VOLTAGE_REF / ADC_BITS)
 
-                        # Envelope: Q15 -> unidades ADC -> voltios (magnitud)
-                        # Arduino convierte: magnitude_adc_units << 15 -> Q15
-                        # Python convierte: Q15 / 32768 -> magnitude_adc_units -> voltios
-                        # La magnitud es siempre positiva
-                        magnitude_adc_units = abs(envelope / Q15_SCALE)
+                        # Envelope: viene del CORDIC con escala similar a señales Q15
+                        # El CORDIC procesa señales en Q15 y produce magnitudes en escala similar
+                        # Aplicamos la misma conversión que para filtered (Q15 → voltios)
+                        # Pero la magnitud es siempre positiva, así que no hay signo
+                        magnitude_pseudo_q15 = abs(envelope)
+                        magnitude_adc_units = magnitude_pseudo_q15 / Q15_SCALE
                         magnitude_volts = magnitude_adc_units * (VOLTAGE_REF / ADC_BITS)
 
                         # Phase: Q15 -> grados (-180 a 180)

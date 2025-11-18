@@ -222,7 +222,10 @@ function updateQFactor() {
 function updateThresholdLines() {
     // Update magnitude plot threshold line
     const magThreshold = parseFloat(elements.magnitudeThreshold.value);
-    const magThresholdVolts = magThreshold * (5.0 / 1.024);  // Convertir normalizado (0-1) a voltios
+    // magThreshold es normalizado (0-1) donde 1.0 = 100% del rango de voltaje
+    // Rango completo del ADC: 0-1023 → 0-5V
+    // Por lo tanto: normalizado × 5.0V
+    const magThresholdVolts = magThreshold * 5.0;  // Rango: 0-5V
     const magnitudeUpdate = {
         'shapes[0].y0': magThresholdVolts,
         'shapes[0].y1': magThresholdVolts,
@@ -260,10 +263,11 @@ function getCurrentParameters() {
     const phaseDegrees = parseFloat(elements.phaseThreshold.value);
 
     // Magnitude: normalized (0-1) -> integer threshold
-    // El CORDIC produce magnitude en unidades ADC (0-512 típico para señal centrada)
-    // magnitudeNormalized de 0.05 = 5% del rango -> 512 * 0.05 = 25.6 ADC units
+    // magnitudeNormalized representa porcentaje del rango completo (0-1)
+    // ADC de 10 bits: 0-1023, por lo tanto magnitudeNormalized × 1024
+    // Ejemplo: 0.05 (5%) → 0.05 × 1024 = 51.2 ≈ 51 unidades ADC
     // Arduino hace: MAGNITUDE_THRESHOLD = valor << 15 para comparar con envelope
-    const magnitude_threshold = Math.round(magnitudeNormalized * 512);  // Scale to ADC units
+    const magnitude_threshold = Math.round(magnitudeNormalized * 1024);  // Scale to ADC units (0-1023)
 
     // Phase: degrees from ±180° -> Q15 phase threshold
     // Phase threshold is checked as: phase > (32768 - threshold) or phase < (-32768 + threshold)
@@ -857,8 +861,8 @@ function initializeRealtimePlots() {
             x0: 0,
             x1: 1,
             xref: 'paper',
-            y0: parseFloat(elements.magnitudeThreshold.value) * (5.0 / 1.024),  // Convertir normalizado a voltios
-            y1: parseFloat(elements.magnitudeThreshold.value) * (5.0 / 1.024),
+            y0: parseFloat(elements.magnitudeThreshold.value) * 5.0,  // normalizado (0-1) × 5.0 → voltios (0-5V)
+            y1: parseFloat(elements.magnitudeThreshold.value) * 5.0,
             line: {
                 color: '#ef4444',
                 width: 2,
@@ -868,7 +872,7 @@ function initializeRealtimePlots() {
         annotations: [{
             x: 0.98,
             xref: 'paper',
-            y: parseFloat(elements.magnitudeThreshold.value) * (5.0 / 1.024),
+            y: parseFloat(elements.magnitudeThreshold.value) * 5.0,
             text: 'Umbral',
             showarrow: false,
             font: { color: '#ef4444', size: 10 },

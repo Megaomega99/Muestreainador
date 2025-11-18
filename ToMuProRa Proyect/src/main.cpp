@@ -434,12 +434,18 @@ void loop() {
     int32_t x = ((int32_t)adcValue - 512L) << Q15_SHIFT;
 
     // Filtro IIR pasa-banda biquad
-    // Ecuación: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
-    // Los coeficientes a1 y a2 ya vienen con signo correcto desde Python
+    // Forma estándar: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+    // Forma directa II: y[n] = (b0*x[n] + b1*x[n-1] + b2*x[n-2]) - (a1*y[n-1] + a2*y[n-2])
+    //
+    // IMPORTANTE: a1 viene negativo desde Python (a1_norm ≈ -1.97)
+    // Por lo tanto: -a1*y[n-1] = -(-1.97)*y[n-1] = +1.97*y[n-1]
+    // Implementación: numerator - denominator donde denominator = a1*y1 + a2*y2
+    //                = numerator - (a1*y1 + a2*y2)
+    //                = numerator - a1*y1 - a2*y2  ← Correcto porque a1 es negativo
     int64_t numerator = ((int64_t)b0_q15 * x) + ((int64_t)b1_q15 * x1_q15) + ((int64_t)b2_q15 * x2_q15);
     int64_t denominator = ((int64_t)a1_q15 * y1_q15) + ((int64_t)a2_q15 * y2_q15);
 
-    // Normalizar y calcular salida con saturación (a1, a2 ya incluyen el signo negativo)
+    // Calcular salida: y = numerator - denominator
     int32_t y_filtered = saturate_q30_to_q15(numerator - denominator);
 
     // Actualizar estados del filtro
@@ -466,11 +472,17 @@ void loop() {
     int32_t real_part = y_filtered;
     CordicResult cordic = fastCORDIC(real_part, imag_part);
 
-    // La magnitud de CORDIC ya debe ser positiva
+    // La magnitud de CORDIC es positiva y está en escala "pseudo-Q15"
+    // (rango similar a las señales Q15 de entrada, del orden de millones)
+    // Python la convierte: envelope / 32768 → unidades ADC → voltios
     int32_t envelope = cordic.magnitude;
     int16_t phase = cordic.phase;
 
     // Detección de picos
+    // envelope está en "pseudo-Q15" (escala similar a señales filtradas)
+    // MAGNITUDE_THRESHOLD se almacena en formato Q15 (valor_ADC << 15)
+    // Para comparar, simplemente usamos MAGNITUDE_THRESHOLD directamente
+    // Ya que ambos están en la misma escala (pseudo-Q15)
     bool isPeak = (envelope > MAGNITUDE_THRESHOLD) &&
                   ((phase > (32768 - PHASE_THRESHOLD)) || (phase < (-32768 + PHASE_THRESHOLD)));
 
@@ -540,13 +552,12 @@ void loop() {
       Serial.write((uint8_t)((y_filtered >> 16) & 0xFF));
       Serial.write((uint8_t)((y_filtered >> 24) & 0xFF));
 
-      // Envolvente/Magnitud: convertir de entero a Q15 format para consistencia
-      // envelope está en unidades ADC (0-512), convertir a Q15: envelope << 15
-      int32_t envelope_q15 = envelope << Q15_SHIFT;
-      Serial.write((uint8_t)(envelope_q15 & 0xFF));
-      Serial.write((uint8_t)((envelope_q15 >> 8) & 0xFF));
-      Serial.write((uint8_t)((envelope_q15 >> 16) & 0xFF));
-      Serial.write((uint8_t)((envelope_q15 >> 24) & 0xFF));
+      // Envolvente/Magnitud: en escala "pseudo-Q15" (similar a señales filtradas)
+      // Python convierte: envelope / 32768 → unidades ADC → voltios (0-2.5V)
+      Serial.write((uint8_t)(envelope & 0xFF));
+      Serial.write((uint8_t)((envelope >> 8) & 0xFF));
+      Serial.write((uint8_t)((envelope >> 16) & 0xFF));
+      Serial.write((uint8_t)((envelope >> 24) & 0xFF));
 
       // Fase (Q15 format, int16_t, rango -32768 a 32767)
       Serial.write((uint8_t)(phase & 0xFF));
@@ -560,8 +571,8 @@ void loop() {
       uint8_t checksum = (uint8_t)(adcValue & 0xFF) ^ (uint8_t)((adcValue >> 8) & 0xFF);
       checksum ^= (uint8_t)(y_filtered & 0xFF) ^ (uint8_t)((y_filtered >> 8) & 0xFF);
       checksum ^= (uint8_t)((y_filtered >> 16) & 0xFF) ^ (uint8_t)((y_filtered >> 24) & 0xFF);
-      checksum ^= (uint8_t)(envelope_q15 & 0xFF) ^ (uint8_t)((envelope_q15 >> 8) & 0xFF);
-      checksum ^= (uint8_t)((envelope_q15 >> 16) & 0xFF) ^ (uint8_t)((envelope_q15 >> 24) & 0xFF);
+      checksum ^= (uint8_t)(envelope & 0xFF) ^ (uint8_t)((envelope >> 8) & 0xFF);
+      checksum ^= (uint8_t)((envelope >> 16) & 0xFF) ^ (uint8_t)((envelope >> 24) & 0xFF);
       checksum ^= (uint8_t)(phase & 0xFF) ^ (uint8_t)((phase >> 8) & 0xFF);
       checksum ^= pulseFlag;
       Serial.write(checksum);
