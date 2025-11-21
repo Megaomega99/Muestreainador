@@ -40,6 +40,7 @@ const elements = {
     // Detection parameters
     magnitudeThreshold: document.getElementById('magnitude-threshold'),
     magnitudeThresholdInput: document.getElementById('magnitude-threshold-input'),
+    magnitudeThresholdVoltage: document.getElementById('magnitude-threshold-voltage'),
     phaseThreshold: document.getElementById('phase-threshold'),
     phaseThresholdInput: document.getElementById('phase-threshold-input'),
     predictionDelay: document.getElementById('prediction-delay'),
@@ -157,6 +158,7 @@ function setupEventListeners() {
     // Detection parameters - Range inputs sync with number inputs
     elements.magnitudeThreshold.addEventListener('input', (e) => {
         elements.magnitudeThresholdInput.value = parseFloat(e.target.value).toFixed(3);
+        updateMagnitudeVoltageDisplay();
         updateThresholdLines();
     });
 
@@ -164,6 +166,7 @@ function setupEventListeners() {
         const value = parseFloat(e.target.value);
         if (!isNaN(value) && value >= 0.001 && value <= 1.0) {
             elements.magnitudeThreshold.value = value;
+            updateMagnitudeVoltageDisplay();
             updateThresholdLines();
         }
     });
@@ -199,9 +202,18 @@ function setupEventListeners() {
     elements.resetArduinoBtn.addEventListener('click', resetArduino);
     elements.clearConsoleBtn.addEventListener('click', clearConsole);
     elements.toggleStreamBtn.addEventListener('click', toggleDataStream);
+
+    // Initialize voltage display
+    updateMagnitudeVoltageDisplay();
 }
 
 // ===== FUNCIONES DE UTILIDAD =====
+function updateMagnitudeVoltageDisplay() {
+    const normalized = parseFloat(elements.magnitudeThreshold.value);
+    const volts = (normalized * 5.0).toFixed(3);
+    elements.magnitudeThresholdVoltage.textContent = `→ ${volts}V`;
+}
+
 function updateRangeValues() {
     // Sync range sliders with number inputs
     elements.centerFreqInput.value = parseFloat(elements.centerFreq.value);
@@ -210,6 +222,7 @@ function updateRangeValues() {
     elements.phaseThresholdInput.value = elements.phaseThreshold.value;
     elements.predictionDelayInput.value = elements.predictionDelay.value;
     updateQFactor();
+    updateMagnitudeVoltageDisplay();  // Update voltage display when syncing values
 }
 
 function updateQFactor() {
